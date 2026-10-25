@@ -1,0 +1,74 @@
+# prt-gltf-demo
+
+A Python / [FastAPI](https://fastapi.tiangolo.com/) demo app that converts
+Siemens NX `.prt` files into **glTF 2.0** and renders the result in the
+browser.
+
+The conversion needs no CAD installation or native libraries: the decoder in
+`converter/` is pure-stdlib Python, recovered by reverse engineering the format
+(the `SPLM` and OLE2/CFBF container layouts, the embedded JT v9.4
+tessellation, and the Annex B/D encodings it uses to store the mesh).
+
+## Quick start (Windows)
+
+```
+py -m pip install -r requirements.txt
+py app.py                                    # web server on http://127.0.0.1:8000
+py app.py my_part.prt                        # CLI: convert in place -> my_part.gltf (+ .bin)
+py app.py my_part.prt out\my_part.gltf       # CLI: convert to an explicit destination
+```
+
+## Web endpoints
+
+| Endpoint   | What it does |
+|---|---|
+| `GET /`        | Minimal HTML page: drag **or** click to upload a `.prt`, then the converted model is rendered with the CDN [three.js](https://threejs.org) `GLTFLoader` and can be downloaded as a single self-contained `.glb`. |
+| `POST /convert`| Multipart file upload (`file` field). Runs the conversion and returns the converted model as `model/gltf-binary` (a self-contained `.glb`, so one response can carry positions + normals + indices). A JSON `400` is returned when the file cannot be decoded. |
+
+## CLI
+
+* `py app.py part.prt` — converts and writes `part.gltf` + `part.bin` next to
+  the input.
+* `py app.py part.prt DESTINATION` — writes to `DESTINATION`:
+  * ending in `.glb` → single self-contained binary glTF there,
+  * anything else → `DESTINATION.gltf` + `DESTINATION.bin`.
+
+## How the converter works
+
+1. The `.prt` file is one of two container layouts: the newer `SPLM`
+   directory-of-streams form or the older OLE2/CFBF compound-document form
+   (multiple streams convert into multiple meshes).
+2. Every NX part embeds a JT v9.4 tessellation stream; the decoder locates the
+   `Version` header pieces, walks the TOC, and reads the LSG and Shape-LOD
+   segments.
+3. The LOD0 mesh is decoded from the compressed encodings described by the
+   public ISO 14306 (JT) specification: arithmetic/bitlength coding and the
+   mesh topology driver, including per-corner vertex records and normals.
+4. The decoded vertices/normals/indices are re-serialized as glTF 2.0, one
+   primitive per mesh, with the per-mesh diffuse color taken from the LSG
+   material when present.
+
+## Limitations
+
+* Only the tessellated geometry is converted — not the exact B-rep boundary
+  representation.
+* Files whose mesh is not stored in the embedded-JT tessellation (e.g. parts
+  that only carry a Parasolid kernel representation) cannot be decoded and
+  report failure instead of producing an empty model.
+* ZIP multi-part assemblies or external references may render children only if
+  the geometry is embedded in the uploaded file itself.
+
+## AI usage
+
+This demo — and the reverse engineering that produced the decoder in
+`converter/` — was built with AI assistance:
+
+* **OpenCode** (agentic coding) driving **GLM 5.3**
+* **REA – Reverse Engineer Anything** ([https://github.com/morluto/rea](https://github.com/morluto/rea))
+
+Why: NX `.prt` files have long been described as proprietary blobs that could
+not be read or converted without closed-source CAD tooling. AI-assisted binary
+analysis (decompilation round-trips, byte-level container forensics checked
+against the published JT file-format specification) made it possible to
+recover a working, dependency-free decoder from the shipped artifacts and
+verify it against real engineering files.

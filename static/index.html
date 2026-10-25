@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>.prt to glTF converter</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #111; color: #ddd;
+         display: flex; height: 100vh; }
+  #side { width: 20rem; padding: 1rem; box-sizing: border-box; background: #181818;
+          border-right: 1px solid #2a2a2a; display: flex; flex-direction: column; gap: .75rem; }
+  h1 { font-size: 1.05rem; margin: 0; }
+  #drop { border: 2px dashed #777; border-radius: .5rem; padding: 1.5rem .75rem;
+          text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+  #drop.over { border-color: #4a9; background: #1a2a1f; }
+  #drop input { display: none; }
+  #stats { font-size: .85rem; color: #9a9; min-height: 2.5em; }
+  #download { display: none; text-decoration: none; padding: .4rem .6rem; border: 1px solid #4a9;
+              border-radius: .35rem; text-align: center; }
+  #download:hover { background: #1a2a1f; }
+  #view { flex: 1; }
+  canvas { display: block; }
+  noscript, .warn { color: #a86; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="side">
+  <h1>.prt &rarr; glTF converter</h1>
+  <div id="drop">
+    <input id="file" type="file" accept=".prt">
+    <div id="dropmsg">Drag &amp; drop a <b>.prt</b> file here<br>or click to select one</div>
+  </div>
+  <div id="stats">Ready.</div>
+  <a id="download" download>Download converted .glb</a>
+  <div id="render"></div>
+</div>
+<div id="view"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+const stats = document.getElementById('stats');
+const dl = document.getElementById('download');
+const renderNote = document.getElementById('render');
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x151518);
+const camera = new THREE.PerspectiveCamera(55, 1, 0.01, 5000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+const view = document.getElementById('view');
+
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+view.appendChild(renderer.domElement);
+
+scene.add(new THREE.HemisphereLight(0xbfd0ff, 0x404040, 2.2));
+const key = new THREE.DirectionalLight(0xffffff, 2.0);
+key.position.set(3, 6, 4);
+scene.add(key);
+scene.add(new THREE.GridHelper(50, 50, 0x444, 0x2a2a2a));
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+camera.position.set(4, 3, 6);
+
+const loader = new GLTFLoader();
+let current, url;
+
+function fitAndCenter(root) {
+  const box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()) return;
+  const size = box.getSize(new THREE.Vector3()).length() || 1;
+  const center = box.getCenter(new THREE.Vector3());
+  root.position.sub(center);
+  const dist = size * 1.6;
+  camera.position.set(dist * 0.7, size * 0.5, dist * 0.7);
+  camera.near = Math.max(size / 1000, 0.001);
+  camera.far = dist * 100;
+  camera.updateProjectionMatrix();
+  controls.target.set(0, 0, 0);
+  controls.update();
+}
+
+function show(gltf, name) {
+  if (current) scene.remove(current);
+  current = gltf.scene || gltf.scenes[0];
+  fitAndCenter(current);
+  scene.add(current);
+  renderNote.textContent = '';
+  url = URL.createObjectURL(gltf.source);   // the raw .glb blob
+  dl.href = url;
+  dl.download = name;
+  dl.style.display = 'block';
+}
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => fileInput.files[0] && convert(fileInput.files[0]));
+
+drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', (e) => {
+  e.preventDefault();
+  drop.classList.remove('over');
+  const f = e.dataTransfer.files[0];
+  if (f) convert(f);
+});
+
+function convert(file) {
+  stats.textContent = 'Converting "' + file.name + '" ...';
+  dl.style.display = 'none';
+  if (url) URL.revokeObjectURL(url);
+  const form = new FormData();
+  form.append('file', file);
+  fetch('/convert', { method: 'POST', body: form })
+    .then(async (res) => {
+      if (!res.ok) {
+        let detail = res.statusText;
+        try { detail = (await res.json()).detail || detail; } catch (e) {}
+        throw new Error('Conversion failed: ' + detail);
+      }
+      const header = res.headers.get('X-Conversion-Stats');
+      const info = header ? JSON.parse(header) : {};
+      const blob = new Blob([await res.arrayBuffer()], { type: 'model/gltf-binary' });
+      const name = file.name.replace(/\.prt$/i, '') + '.glb';
+      loader.load(
+        URL.createObjectURL(blob),
+        (gltf) => { gltf.source = blob; show(gltf, name);
+                    stats.textContent = '"' + file.name + '" converted: '
+                      + info.meshes + ' mesh(es), ' + info.points + ' points, '
+                      + info.triangles + ' triangles.'; },
+        undefined,
+        (err) => { stats.textContent = 'Conversion finished but three.js could not render: ' + err; }
+      );
+    })
+    .catch((err) => { stats.textContent = String(err.message || err); });
+}
+</script>
+</body>
+</html>
