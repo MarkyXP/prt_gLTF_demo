@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # meshdec2.py - faithful Annex D (JT10.6 Rev D) MeshCodec/MeshDecoder machine.
 # Transcribed from jt106_txt.txt pages 232-247 (DualVFMesh + MeshCoderDriver +
-# MeshCodec). v9 rep-data arrays (fd0..7, val, vgrp, vflag, am0..7, amM,
+# MeshCodec). v9 CadEx rep-data arrays (fd0..7, val, vgrp, vflag, am0..7, amM,
 # hiDeg, splF, splP). Duality: dual VERTICES = primal faces (triangles),
 # dual FACES = primal vertices -> coords indexed by dual-face creation order,
 # attr records counted in dual-face creation order over popcount(mask(f)).
