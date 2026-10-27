@@ -24,6 +24,7 @@ if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 
 import prt_jt  # noqa: E402
+import parasolid  # noqa: E402
 
 from fastapi import FastAPI, File, HTTPException, UploadFile  # noqa: E402
 from fastapi.responses import FileResponse, Response  # noqa: E402
@@ -44,14 +45,18 @@ def convert_to_glb(data, part_name=None):
     """Convert .prt bytes -> (glb_bytes, {'points': .., 'triangles': ..})."""
     coll = mesh_collection(data)
     if not coll:
-        raise ValueError("no decodable embedded-JT mesh in this .prt file")
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "part.prt")
+            with open(src, "wb") as f:
+                f.write(data)
+            coll = parasolid.convert(src, tmpdir=td)
+    tris = sum(len(o["t"]["tris"]) for o in coll)
+    pts = sum(len(o["t"]["pts"]) for o in coll)
     with tempfile.TemporaryDirectory() as td:
         stem = os.path.join(td, "part")
         prt_jt.write_gltf(coll, stem, glb=True, part_name=part_name)
         with open(stem + ".glb", "rb") as f:
             glb = f.read()
-    tris = sum(len(o["t"]["tris"]) for o in coll)
-    pts = sum(len(o["t"]["pts"]) for o in coll)
     return glb, {"points": pts, "triangles": tris, "meshes": len(coll)}
 
 
@@ -59,7 +64,10 @@ def convert_to_files(src, out):
     """CLI core: source .prt -> output destination. Reports progress; raises."""
     coll = mesh_collection(Path(src).read_bytes())
     if not coll:
-        raise ValueError("no decodable embedded-JT mesh in this .prt file")
+        print("no embedded-JT mesh; trying the parasolid (OCCT) tier...")
+        coll = parasolid.convert(src)
+    if not coll:
+        raise ValueError("no decodable mesh in this .prt file")
     tris = sum(len(o["t"]["tris"]) for o in coll)
     pts = sum(len(o["t"]["pts"]) for o in coll)
     out_path = Path(out)

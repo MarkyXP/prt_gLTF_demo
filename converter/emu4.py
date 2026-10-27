@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# emu4.py - correct x86-64 emu for FUN_1800617f0 (JT v9 bitlength worker)
+# emu4.py - correct x86-64 emu for FUN_1800617f0 (CadEx v9 bitlength worker)
 # Ops present: MOV MOVSXD LEA ADD SUB XOR OR INC DEC CDQ CMP TEST
 #              SHL SHR SAR Jcc(JNZ JZ JL JGE JLE JG JS JMP) CMOVL CMOVZ
 #              PUSH POP CALL(const) RET NOP

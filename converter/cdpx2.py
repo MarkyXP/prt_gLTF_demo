@@ -1,5 +1,5 @@
 # cdp2.py - faithful JTCodec_CDP2<int,uint>::Parse + Annex B arithmetic decoder
-# Grounded in vendor-format-implementation DLL decompiles (0x18005b660 vec<int> Parse, 0x18005b4a0
+# Grounded in CadExJT.dll decompiles (0x18005b660 vec<int> Parse, 0x18005b4a0
 # ProbContext2 parse) and jt106_txt.txt ArithmeticCodec2 (spec). Stdlib only.
 import struct
 import emu4                    # v9 bitlength decode (kept untouched)
