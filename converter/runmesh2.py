@@ -132,7 +132,7 @@ def load_lod0_obj(d, dbg=False):
             pos += 9
         r['coordQuant'] = qd
         cdp = []
-        # Ghidra JTCodec_CompressedVertexCoordinateArray::Parse (vendor
+        # Ghidra JTCodec_CompressedVertexCoordinateArray::Parse (CadExJT
         # 0x180057ea0): the quantizer's per-axis bits byte lives at
         # this+0xc; when it is NONZERO the v>=900 frame reads ONE CDP per
         # component (this+0xb8, stride 0x18) and applies an in-place

@@ -18,6 +18,23 @@ py app.py my_part.prt                        # CLI: convert in place -> my_part.
 py app.py my_part.prt out\my_part.gltf       # CLI: convert to an explicit destination
 ```
 
+### Optional: parasolid-only files
+
+Some `.prt` files store no embedded JT mesh — only the Parasolid B-rep
+transmit (`.x_b`) inside their object-model layer. When the embedded-JT
+decoder finds no mesh, the demo falls back to rebuilding those transmits and
+tessellating them with an OCCT-based toolchain. Configure:
+
+```
+PRT_PK_EXE       # parasolid-kit executable (x_b -> STEP)
+PRT_SCHEMA_DIR   # directory with the sch_*.sch_txt schema files
+                 #   (defaults to .\converter\schema)
+PRT_OCP_PYTHON   # a Python interpreter with the OCP (OCCT Python) bindings
+```
+
+Without these variables the fallback is unavailable and such files report
+failure instead of producing an empty model.
+
 ## Web endpoints
 
 | Endpoint   | What it does |
@@ -37,14 +54,17 @@ py app.py my_part.prt out\my_part.gltf       # CLI: convert to an explicit desti
 
 1. The `.prt` file is one of two container layouts: the newer `SPLM`
    directory-of-streams form or the older OLE2/CFBF compound-document form
-   (multiple streams convert into multiple meshes).
-2. Every NX part embeds a JT v9.4 tessellation stream; the decoder locates the
-   `Version` header pieces, walks the TOC, and reads the LSG and Shape-LOD
-   segments.
+   (multiple streams convert into multiple meshes; both directory variants —
+   fixed-size and variable-header — are handled).
+2. Every part that carries an embedded JT v9.4 tessellation stream is decoded
+   first: the decoder locates the `Version` header pieces, walks the TOC, and
+   reads the LSG and Shape-LOD segments.
 3. The LOD0 mesh is decoded from the compressed encodings described by the
    public ISO 14306 (JT) specification: arithmetic/bitlength coding and the
    mesh topology driver, including per-corner vertex records and normals.
-4. The decoded vertices/normals/indices are re-serialized as glTF 2.0, one
+4. If a file carries no JT mesh, the Parasolid transmits inside its
+   object-model layer are rebuilt and tessellated through the OCCT fallback.
+5. The decoded vertices/normals/indices are re-serialized as glTF 2.0, one
    primitive per mesh, with the per-mesh diffuse color taken from the LSG
    material when present.
 
@@ -52,11 +72,12 @@ py app.py my_part.prt out\my_part.gltf       # CLI: convert to an explicit desti
 
 * Only the tessellated geometry is converted — not the exact B-rep boundary
   representation.
-* Files whose mesh is not stored in the embedded-JT tessellation (e.g. parts
-  that only carry a Parasolid kernel representation) cannot be decoded and
-  report failure instead of producing an empty model.
-* ZIP multi-part assemblies or external references may render children only if
-  the geometry is embedded in the uploaded file itself.
+* Parasolid-only files run through the optional OCCT fallback: rebuilt
+  transmits are exported per body and tessellated; a small fraction of bodies
+  cannot be re-exported by that toolchain today.
+* Assemblies or external references may render children only if the geometry
+  is embedded in the uploaded file itself.
+* Colour attributes are not converted yet.
 
 ## AI usage
 

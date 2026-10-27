@@ -46,29 +46,37 @@ def open_prt(path):
 
 def parse_splm(blob):
     streams = {}
-    # u32 header fields: 0x08 = total "thing" count (e.g. 0x0042e106 seen is file len?),
-    # directory entries start known-good from 0x60; scan with validation.
+    # Directory = chain of [u32 namelen][ascii name][u64 off][u64 len] entries.
+    # The chain start varies with the header variant (extra header u32s / a
+    # leading '/Root/' entry whose off+len hold a 16-B GUID), so discover it:
+    # try every start, keep the longest valid chain (>=3 entries, at least one
+    # '/Root/' name, at least one real payload entry).
     n = len(blob)
-    pos = 0x60
-    entries = []
-    while pos + 4 <= n:
-        nlen = struct.unpack_from('<I', blob, pos)[0]
-        if not (1 <= nlen <= 256):
-            break
-        name = blob[pos+4:pos+4+nlen].rstrip(b'\x00')
-        if not name or not re.fullmatch(rb'[A-Za-z0-9 _./\-]+', name):
-            break
-        q = pos + 4 + nlen
-        if q + 16 > n:
-            break
-        pay_start, pay_len = struct.unpack_from('<QQ', blob, q)
-        if pay_start > n or pay_len > n - pay_start:
-            break
-        entries.append((name.decode('ascii'), pay_start, pay_len))
-        pos = q + 16
+    best = []
+    for start in range(0x10, min(0x200, n - 24)):
+        pos = start
+        entries = []
+        while pos + 4 <= n:
+            nlen = struct.unpack_from('<I', blob, pos)[0]
+            if not (1 <= nlen <= 256):
+                break
+            name = blob[pos+4:pos+4+nlen].rstrip(b'\x00')
+            if not name or not re.fullmatch(rb'[A-Za-z0-9 _./\-]+', name):
+                break
+            q = pos + 4 + nlen
+            if q + 16 > n:
+                break
+            pay_start, pay_len = struct.unpack_from('<QQ', blob, q)
+            entries.append((name.decode('ascii'), pay_start, pay_len))
+            pos = q + 16
+        if len(entries) > len(best) and any(nm.startswith('/Root/')
+                                            for nm, _, _ in entries) \
+                and any(0 < st and st + ln <= n and ln > 0 for _, st, ln in entries):
+            best = entries
+    entries = best
     for name, st, ln in entries:
-        if ln == 0:
-            continue  # directory-only entries (e.g. /Root/images/) carry no payload
+        if ln == 0 or st <= 0 or st + ln > n:
+            continue  # directory-only entries (off/len=0 or 16-B GUID), no payload
         d0 = blob[st:st+ln]
         streams[name] = Stream(name, st, ln, d0)
     return streams
@@ -363,7 +371,7 @@ import meshdec2 as _md2         # noqa: E402
 
 
 def _expand_cdp(vals, mask):
-    """Cumulative 4-primer expansion (coordfix2-verified, bit-exact vs reference output)."""
+    """Cumulative 4-primer expansion (coordfix2-verified, bit-exact vs CAD Exchanger)."""
     out = [v & mask for v in vals[:4]]
     for i in range(4, len(vals)):
         out.append((out[i - 1] + vals[i]) & mask)
@@ -373,13 +381,13 @@ def _expand_cdp(vals, mask):
 def corner_normal_ids(fm, tris, slots):
     """-> dict {(tri, k) -> vertex-record id} using dual Face Attribute Masks.
 
-    Vendor rule (spec 6.1.4 + reference-implementation dispatch): one vertex record is written
+    Vendor rule (spec 6.1.4 + CadExJT dispatch): one vertex record is written
     per set bit across all dual Face Attribute Masks, records ordered by dual
     face creation (activateF) order; per dual face the set-bit positions mark
     the ring slots that start a new record; a corner at ring slot s belongs to
     the record of the interval starting at the nearest set bit <= s (ring
     wraps: slots below the first set bit belong to the LAST record).
-    Validated 702/702 corners against reference OBJ output (screw), and
+    Validated 702/702 corners against CAD Exchanger OBJ output (screw), and
     all corner normals agree with triangle winding (median dot 0.994).
     """
     pop = [bin(fm.attrMask(fi) & 0xFFFFFFFF).count('1')
@@ -625,9 +633,12 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
             prim['_norm'] = {'idx': None}
             prim['_normOff'] = (n0, 3 * len(tris))
         i0 = len(bufs)
+        need32 = bool(tris) and max(max(T) for T in tris) > 65535
         for T in tris:
-            bufs += struct.pack('<HHH', *T)
+            bufs += struct.pack('<III' if need32 else '<HHH', *T)
         prim['_idx'] = (i0, 3 * len(tris))
+        prim['_idxComp'] = 5125 if need32 else 5123
+        prim['_idxW'] = 4 if need32 else 2
         prim['_color'] = m.get('color')   # (r,g,b,a) or None -> material ref
         cent = [sum(p[k] for p in pts) / len(pts) for k in range(3)]
         nodes.append({'name': part_name or ('part-%d' % i),
@@ -639,39 +650,43 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
     # assemble accessors + views with canonical offsets
     # (all offsets are absolute buffer positions recorded in the first loop;
     #  pos0/_normOff/_idx -- byteEnd tracks the running end for sanity only)
-    views, byteEnd = [], 0
+    views, accessors, byteEnd = [], [], 0
     for mo, m in zip(meshes_out, meshes):
         t = m['t']
         pts, tris = t['pts'], t['tris']
         prim = mo['primitives'][0]
-        prim['attributes']['POSITION'] = {
-            'buffer': 0, 'byteOffset': prim['_pos0'], 'componentType': 5126,
-            'count': len(pts), 'type': 'VEC3',
-            'min': [min(p[k] for p in pts) for k in range(3)],
-            'max': [max(p[k] for p in pts) for k in range(3)]}
+        vpos = len(views)
         views.append({'buffer': 0, 'byteOffset': prim['_pos0'],
                       'byteLength': 12 * len(pts), 'target': 34962})
+        accessors.append({'bufferView': vpos, 'componentType': 5126,
+                          'count': len(pts), 'type': 'VEC3',
+                          'min': [min(p[k] for p in pts) for k in range(3)],
+                          'max': [max(p[k] for p in pts) for k in range(3)]})
+        prim['attributes']['POSITION'] = len(accessors) - 1
         byteEnd = prim['_pos0'] + 12 * len(pts)
-        prim.pop('_norm', None)
         if '_normOff' in prim:
             n0, nc = prim.pop('_normOff')
-            prim['attributes']['NORMAL'] = {
-                'buffer': 0, 'byteOffset': n0, 'componentType': 5126,
-                'count': nc, 'type': 'VEC3'}
+            vn = len(views)
             views.append({'buffer': 0, 'byteOffset': n0,
                           'byteLength': 12 * nc, 'target': 34962})
+            accessors.append({'bufferView': vn, 'componentType': 5126,
+                              'count': nc, 'type': 'VEC3'})
+            prim['attributes']['NORMAL'] = len(accessors) - 1
             assert n0 == byteEnd
             byteEnd += 12 * nc
         i0, ic = prim.pop('_idx')
-        prim['indices'] = {
-            'buffer': 0, 'byteOffset': i0, 'componentType': 5123,
-            'count': ic, 'type': 'SCALAR'}
+        icomp = prim.pop('_idxComp', 5123)
+        iw = prim.pop('_idxW', 2)
+        vi = len(views)
+        views.append({'buffer': 0, 'byteOffset': i0,
+                      'byteLength': iw * ic, 'target': 34963})
+        accessors.append({'bufferView': vi, 'componentType': icomp,
+                          'count': ic, 'type': 'SCALAR'})
+        prim['indices'] = len(accessors) - 1
         prim['mode'] = 4
         prim['material'] = prim.pop('_mat', 0)
-        views.append({'buffer': 0, 'byteOffset': i0,
-                      'byteLength': 2 * ic, 'target': 34963})
         assert i0 == byteEnd
-        byteEnd += 6 * ic
+        byteEnd += iw * ic
     while len(bufs) % 4:
         bufs += b'\x00'
     default_mat = {'name': 'default',
@@ -702,6 +717,7 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
         'nodes': nodes,
         'meshes': meshes_out,
         'materials': materials,
+        'accessors': accessors,
         'buffers': [{'byteLength': len(bufs)}],
         'bufferViews': views,
     }
