@@ -69,6 +69,8 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 view.appendChild(renderer.domElement);
+new ResizeObserver(resize).observe(view);
+resize();
 
 scene.add(new THREE.HemisphereLight(0xbfd0ff, 0x404040, 2.2));
 const key = new THREE.DirectionalLight(0xffffff, 2.0);
