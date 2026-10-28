@@ -234,15 +234,17 @@ async def references(file: UploadFile = File(...)):
 
 
 @app.post("/convert")
-async def convert(files: list[UploadFile] = File(...)):
+async def convert(files: list[UploadFile] | None = File(None),
+                  file: UploadFile | None = File(None)):
     """Multipart .prt uploads -> converted self-contained .glb response."""
-    if not files:
+    uploads = files or ([file] if file is not None else [])
+    if not uploads:
         raise HTTPException(status_code=400, detail="no .prt files uploaded")
-    root = files[0]
+    root = uploads[0]
     data = await root.read()
     extra_parts = []
-    for file in files[1:]:
-        extra_parts.append((file.filename or "", await file.read()))
+    for upload in uploads[1:]:
+        extra_parts.append((upload.filename or "", await upload.read()))
     part_name = Path(root.filename or "part.prt").stem
     try:
         glb, stats = convert_to_glb(
