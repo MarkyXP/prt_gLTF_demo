@@ -69,7 +69,22 @@ def _convert_part_path(path, seen=None):
         return []
     seen.add(key)
 
-    coll = mesh_collection(path.read_bytes())
+    data = path.read_bytes()
+    coll = mesh_collection(data)
+    refs = parasolid.find_referenced_parts(data, _reference_roots(data))
+    if coll and not _is_proxy_collection(coll):
+        return coll
+    if refs:
+        referenced = []
+        for ref in refs:
+            try:
+                child = _convert_part_path(ref, seen)
+            except RuntimeError:
+                continue
+            if child:
+                referenced.extend(child)
+        if referenced:
+            return referenced
     if coll:
         return coll
     try:
@@ -89,6 +104,13 @@ def _convert_part_path(path, seen=None):
                                (primary, ", ".join(os.path.basename(r)
                                                    for r in refs)))
         raise
+
+
+def _is_proxy_collection(coll):
+    """Identify the small box proxy used by some NX assembly JT streams."""
+    return bool(coll) and all(
+        len(mesh["t"]["pts"]) <= 8 and len(mesh["t"]["tris"]) <= 12
+        for mesh in coll)
 
 
 def _reference_roots(data=None):
@@ -143,19 +165,17 @@ def _referenced_parts_for_upload(data, td):
 
 def convert_to_glb(data, part_name=None, extra_parts=None):
     """Convert .prt bytes -> (glb_bytes, {'points': .., 'triangles': ..})."""
-    coll = mesh_collection(data)
-    if not coll:
-        with tempfile.TemporaryDirectory() as td:
-            src = os.path.join(td, "part.prt")
-            with open(src, "wb") as f:
-                f.write(data)
-            for name, part_data in extra_parts or ():
-                safe_name = os.path.basename(name)
-                if safe_name and safe_name.lower() != "part.prt":
-                    with open(os.path.join(td, safe_name), "wb") as f:
-                        f.write(part_data)
-            _referenced_parts_for_upload(data, td)
-            coll = _convert_part_path(src)
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "part.prt")
+        with open(src, "wb") as f:
+            f.write(data)
+        for name, part_data in extra_parts or ():
+            safe_name = os.path.basename(name)
+            if safe_name and safe_name.lower() != "part.prt":
+                with open(os.path.join(td, safe_name), "wb") as f:
+                    f.write(part_data)
+        _referenced_parts_for_upload(data, td)
+        coll = _convert_part_path(src)
     tris = sum(len(o["t"]["tris"]) for o in coll)
     pts = sum(len(o["t"]["pts"]) for o in coll)
     with tempfile.TemporaryDirectory() as td:
