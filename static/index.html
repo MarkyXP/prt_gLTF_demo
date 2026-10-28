@@ -15,6 +15,10 @@
   #drop.over { border-color: #4a9; background: #1a2a1f; }
   #drop input { display: none; }
   #stats { font-size: .85rem; color: #9a9; min-height: 2.5em; }
+  #refs { font-size: .8rem; color: #aaa; max-height: 12rem; overflow: auto; }
+  #refs .missing { color: #f0a0a0; border: 1px solid #a44; border-radius: .25rem;
+                  padding: .15rem .3rem; margin-top: .15rem; }
+  #refs .child { margin-left: 1rem; }
   #download { display: none; text-decoration: none; padding: .4rem .6rem; border: 1px solid #4a9;
               border-radius: .35rem; text-align: center; }
   #download:hover { background: #1a2a1f; }
@@ -35,10 +39,11 @@
 <div id="side">
   <h1>.prt &rarr; glTF converter</h1>
   <div id="drop">
-    <input id="file" type="file" accept=".prt">
-    <div id="dropmsg">Drag &amp; drop a <b>.prt</b> file here<br>or click to select one</div>
+    <input id="file" type="file" accept=".prt" multiple>
+    <div id="dropmsg">Drag &amp; drop .prt file(s) here<br>or click to select one</div>
   </div>
   <div id="stats">Ready.</div>
+  <div id="refs"></div>
   <a id="download" download>Download converted .glb</a>
   <div id="render"></div>
 </div>
@@ -54,6 +59,7 @@ const fileInput = document.getElementById('file');
 const stats = document.getElementById('stats');
 const dl = document.getElementById('download');
 const renderNote = document.getElementById('render');
+const refs = document.getElementById('refs');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x151518);
@@ -118,24 +124,35 @@ renderer.setAnimationLoop(() => {
 });
 
 drop.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', () => fileInput.files[0] && convert(fileInput.files[0]));
+fileInput.addEventListener('change', () => fileInput.files.length &&
+  convert(Array.from(fileInput.files)));
 
 drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('over'));
 drop.addEventListener('drop', (e) => {
   e.preventDefault();
   drop.classList.remove('over');
-  const f = e.dataTransfer.files[0];
-  if (f) convert(f);
+  const files = Array.from(e.dataTransfer.files);
+  if (files.length) convert(files);
 });
 
-function convert(file) {
+function convert(files) {
+  const file = files[0];
   stats.textContent = 'Converting "' + file.name + '" ...';
+  refs.textContent = 'Finding referenced components...';
   dl.style.display = 'none';
   if (url) URL.revokeObjectURL(url);
-  const form = new FormData();
-  form.append('file', file);
-  fetch('/convert', { method: 'POST', body: form })
+  const lookup = new FormData();
+  lookup.append('file', file);
+  fetch('/references', { method: 'POST', body: lookup })
+    .then(async (res) => res.ok ? res.json() : null)
+    .then(tree => { if (tree) renderReferences(tree); })
+    .catch(() => { refs.textContent = ''; })
+    .then(() => {
+      const form = new FormData();
+      for (const part of files) form.append('files', part);
+      return fetch('/convert', { method: 'POST', body: form });
+    })
     .then(async (res) => {
       if (!res.ok) {
         let detail = res.statusText;
@@ -157,6 +174,20 @@ function convert(file) {
       );
     })
     .catch((err) => { stats.textContent = String(err.message || err); });
+}
+
+function renderReferences(tree) {
+  refs.replaceChildren();
+  const add = (node, parent, depth) => {
+    const row = document.createElement('div');
+    row.textContent = (depth ? '↳ ' : '') + node.name +
+      (node.found || !depth ? '' : ' (not found — upload with assembly)');
+    if (!node.found && depth) row.classList.add('missing');
+    if (depth) row.classList.add('child');
+    parent.appendChild(row);
+    for (const child of node.children) add(child, parent, depth + 1);
+  };
+  add(tree, refs, 0);
 }
 </script>
 </body>

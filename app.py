@@ -91,7 +91,57 @@ def _convert_part_path(path, seen=None):
         raise
 
 
-def convert_to_glb(data, part_name=None):
+def _reference_roots(data=None):
+    configured = os.environ.get("PRT_REFERENCE_ROOTS", "")
+    roots = [p for p in configured.split(os.pathsep) if p]
+    roots += parasolid.referenced_search_roots(data)
+    adjacent = BASE_DIR.parent / "cadex"
+    if adjacent.is_dir():
+        roots.append(str(adjacent))
+    roots.append(str(BASE_DIR))
+    return list(dict.fromkeys(roots))
+
+
+def _reference_tree(name, data, roots, seen=None):
+    seen = set() if seen is None else seen
+    key = name.lower()
+    node = {"name": name, "found": False, "children": []}
+    if key in seen:
+        return node
+    seen.add(key)
+    for child_name in parasolid.referenced_part_names(data):
+        child = {"name": child_name, "found": False, "children": []}
+        if child_name.lower() == name.lower():
+            node["children"].append(child)
+            continue
+        matches = parasolid.find_referenced_parts(
+            b"\x00\x00\x00" + child_name.encode("ascii"),
+            roots)
+        if matches:
+            child["found"] = True
+            try:
+                child_data = Path(matches[0]).read_bytes()
+                nested = _reference_tree(
+                    child_name, child_data, roots, seen)
+                child["children"] = nested["children"]
+            except OSError:
+                pass
+        node["children"].append(child)
+    return node
+
+
+def _referenced_parts_for_upload(data, td):
+    copied = []
+    for path in parasolid.find_referenced_parts(data, _reference_roots(data)):
+        target = os.path.join(td, os.path.basename(path))
+        if not os.path.exists(target):
+            with open(path, "rb") as src, open(target, "wb") as dst:
+                dst.write(src.read())
+        copied.append(path)
+    return copied
+
+
+def convert_to_glb(data, part_name=None, extra_parts=None):
     """Convert .prt bytes -> (glb_bytes, {'points': .., 'triangles': ..})."""
     coll = mesh_collection(data)
     if not coll:
@@ -99,6 +149,12 @@ def convert_to_glb(data, part_name=None):
             src = os.path.join(td, "part.prt")
             with open(src, "wb") as f:
                 f.write(data)
+            for name, part_data in extra_parts or ():
+                safe_name = os.path.basename(name)
+                if safe_name and safe_name.lower() != "part.prt":
+                    with open(os.path.join(td, safe_name), "wb") as f:
+                        f.write(part_data)
+            _referenced_parts_for_upload(data, td)
             coll = _convert_part_path(src)
     tris = sum(len(o["t"]["tris"]) for o in coll)
     pts = sum(len(o["t"]["pts"]) for o in coll)
@@ -169,13 +225,28 @@ def index():
     return FileResponse(BASE_DIR / "static" / "index.html")
 
 
-@app.post("/convert")
-async def convert(file: UploadFile = File(...)):
-    """Multipart .prt upload -> converted self-contained .glb response."""
+@app.post("/references")
+async def references(file: UploadFile = File(...)):
+    """Return the server-resolved component tree for an uploaded .prt."""
     data = await file.read()
-    part_name = Path(file.filename or "part.prt").stem
+    name = file.filename or "part.prt"
+    return _reference_tree(name, data, _reference_roots(data))
+
+
+@app.post("/convert")
+async def convert(files: list[UploadFile] = File(...)):
+    """Multipart .prt uploads -> converted self-contained .glb response."""
+    if not files:
+        raise HTTPException(status_code=400, detail="no .prt files uploaded")
+    root = files[0]
+    data = await root.read()
+    extra_parts = []
+    for file in files[1:]:
+        extra_parts.append((file.filename or "", await file.read()))
+    part_name = Path(root.filename or "part.prt").stem
     try:
-        glb, stats = convert_to_glb(data, part_name=part_name)
+        glb, stats = convert_to_glb(
+            data, part_name=part_name, extra_parts=extra_parts)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex))
     import json

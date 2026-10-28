@@ -28,6 +28,7 @@ PS_TYPES = {10, 13, 14, 16, 17, 18}
 TJ_SELF = os.path.dirname(os.path.abspath(__file__))
 PART_REF_RE = re.compile(rb'(?<![A-Za-z0-9_.-])'
                          rb'([A-Za-z0-9][A-Za-z0-9_.-]*\.prt)')
+PATH_RE = re.compile(rb'(?:[A-Za-z]:\\|\\\\)[A-Za-z0-9_ .\\/-]+')
 
 
 def ug_part_stream(path):
@@ -54,18 +55,57 @@ def referenced_part_paths(path):
     data = ug_part_stream(path)
     if not data:
         return []
-    base = os.path.dirname(os.path.abspath(path))
-    own = os.path.abspath(path).lower()
+    return find_referenced_parts(data, [os.path.dirname(os.path.abspath(path))])
+
+
+def referenced_part_names(data):
+    """Return unique referenced .prt basenames from object-model metadata."""
+    names = []
+    seen = set()
+    for raw in PART_REF_RE.findall(data or b""):
+        name = raw.decode("ascii", "ignore")
+        key = name.lower()
+        if key not in seen:
+            seen.add(key)
+            names.append(name)
+    return names
+
+
+def referenced_search_roots(data):
+    """Return drive/UNC directories embedded in assembly metadata."""
+    roots = []
+    seen = set()
+    for raw in PATH_RE.findall(data or b""):
+        value = raw.decode("ascii", "ignore").rstrip(
+            " \t\r\n\x0b\x0c.,;()[]{}")
+        if not value:
+            continue
+        root = os.path.dirname(value) if value.lower().endswith(".prt") \
+            else value
+        root = root.rstrip("\\/")
+        if root and root.lower() not in seen:
+            seen.add(root.lower())
+            roots.append(root)
+    return roots
+
+
+def find_referenced_parts(data, roots):
+    """Find referenced .prt files below the supplied server-side roots."""
     out = []
     seen = set()
-    for raw in PART_REF_RE.findall(data):
-        name = raw.decode("ascii", "ignore")
-        candidate = os.path.abspath(os.path.join(base, name))
-        if candidate.lower() == own or candidate.lower() in seen:
-            continue
-        if os.path.isfile(candidate):
-            seen.add(candidate.lower())
-            out.append(candidate)
+    for name in referenced_part_names(data):
+        for root in roots:
+            root = os.path.abspath(root)
+            for current, _dirs, files in os.walk(root):
+                matches = {f.lower(): f for f in files}
+                if name.lower() not in matches:
+                    continue
+                candidate = os.path.abspath(os.path.join(
+                    current, matches[name.lower()]))
+                if candidate.lower() not in seen:
+                    seen.add(candidate.lower())
+                    out.append(candidate)
+                break
     return out
 
 

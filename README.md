@@ -48,6 +48,7 @@ uv pip install --python .venv\Scripts\python.exe "parasolid-kit[occt]"
 | `PRT_PK_EXE` | `.venv\Scripts\parasolid-kit.exe` |
 | `PRT_SCHEMA_DIR` | `converter\schema` |
 | `PRT_OCP_PYTHON` | `.venv\Scripts\python.exe` |
+| `PRT_REFERENCE_ROOTS` | Optional `;`-separated server-side search roots |
 
 Explicit environment variables always take precedence. For example, to use a
 separate Parasolid Kit or OCP installation in PowerShell:
@@ -56,20 +57,24 @@ separate Parasolid Kit or OCP installation in PowerShell:
 $env:PRT_PK_EXE = "C:\path\to\parasolid-kit.exe"
 $env:PRT_SCHEMA_DIR = "C:\path\to\schema"
 $env:PRT_OCP_PYTHON = "C:\path\to\python.exe"
+$env:PRT_REFERENCE_ROOTS = "J:\VBS\gemini\working;C:\cad\parts"
 py app.py part.prt
 ```
 
 For assembly `.prt` files with no embedded mesh or Parasolid transmit, the
 converter also reads component filenames from `UG_PART/UG_PART` metadata and
-tries matching `.prt` files beside the input. Referenced files stored only at
-an unavailable historical/network path cannot be resolved automatically; copy
-the required component files beside the assembly first.
+tries matching `.prt` files beside the input. In the web UI, upload the
+assembly and its referenced component files together; the first uploaded file
+is treated as the assembly. The backend also searches `PRT_REFERENCE_ROOTS`
+and any drive/UNC directories embedded in the assembly metadata. Referenced
+files stored only at an unavailable historical/network path cannot be
+resolved automatically.
 
 ## Web endpoints
 
 | Endpoint   | What it does |
 |---|---|
-| `GET /`        | Minimal HTML page: drag **or** click to upload a `.prt`, then the converted model is rendered with the CDN [three.js](https://threejs.org) `GLTFLoader` and can be downloaded as a single self-contained `.glb`. |
+| `GET /`        | Minimal HTML page: drag **or** click to upload one or more `.prt` files, then the converted model is rendered with the CDN [three.js](https://threejs.org) `GLTFLoader` and can be downloaded as a single self-contained `.glb`. |
 | `POST /convert`| Multipart file upload (`file` field). Runs the conversion and returns the converted model as `model/gltf-binary` (a self-contained `.glb`, so one response can carry positions + normals + indices). A JSON `400` is returned when the file cannot be decoded. |
 
 ## CLI
