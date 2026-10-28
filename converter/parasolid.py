@@ -11,6 +11,7 @@ conversion surfaces a descriptive error instead of geometry.
 """
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -25,6 +26,8 @@ import s19_route_a
 OM_TYPES = {1, 3, 4, 6, 15}
 PS_TYPES = {10, 13, 14, 16, 17, 18}
 TJ_SELF = os.path.dirname(os.path.abspath(__file__))
+PART_REF_RE = re.compile(rb'(?<![A-Za-z0-9_.-])'
+                         rb'([A-Za-z0-9][A-Za-z0-9_.-]*\.prt)')
 
 
 def ug_part_stream(path):
@@ -44,6 +47,26 @@ def ug_part_stream(path):
         except Exception:
             ug = None
     return ug
+
+
+def referenced_part_paths(path):
+    """Return existing local .prt files named by the assembly metadata."""
+    data = ug_part_stream(path)
+    if not data:
+        return []
+    base = os.path.dirname(os.path.abspath(path))
+    own = os.path.abspath(path).lower()
+    out = []
+    seen = set()
+    for raw in PART_REF_RE.findall(data):
+        name = raw.decode("ascii", "ignore")
+        candidate = os.path.abspath(os.path.join(base, name))
+        if candidate.lower() == own or candidate.lower() in seen:
+            continue
+        if os.path.isfile(candidate):
+            seen.add(candidate.lower())
+            out.append(candidate)
+    return out
 
 
 def build_xbs(path):
