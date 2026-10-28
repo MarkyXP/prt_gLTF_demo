@@ -59,6 +59,12 @@ $env:PRT_OCP_PYTHON = "C:\path\to\python.exe"
 py app.py part.prt
 ```
 
+For assembly `.prt` files with no embedded mesh or Parasolid transmit, the
+converter also reads component filenames from `UG_PART/UG_PART` metadata and
+tries matching `.prt` files beside the input. Referenced files stored only at
+an unavailable historical/network path cannot be resolved automatically; copy
+the required component files beside the assembly first.
+
 ## Web endpoints
 
 | Endpoint   | What it does |

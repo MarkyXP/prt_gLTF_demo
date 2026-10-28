@@ -60,6 +60,37 @@ def mesh_collection(data):
     return coll
 
 
+def _convert_part_path(path, seen=None):
+    """Resolve embedded geometry, then local referenced parts, if available."""
+    path = Path(path).resolve()
+    seen = set() if seen is None else seen
+    key = str(path).lower()
+    if key in seen:
+        return []
+    seen.add(key)
+
+    coll = mesh_collection(path.read_bytes())
+    if coll:
+        return coll
+    try:
+        return parasolid.convert(str(path))
+    except RuntimeError as primary:
+        refs = parasolid.referenced_part_paths(str(path))
+        for ref in refs:
+            try:
+                coll = _convert_part_path(ref, seen)
+            except RuntimeError:
+                continue
+            if coll:
+                return coll
+        if refs:
+            raise RuntimeError("%s; referenced local parts had no usable "
+                               "geometry: %s" %
+                               (primary, ", ".join(os.path.basename(r)
+                                                   for r in refs)))
+        raise
+
+
 def convert_to_glb(data, part_name=None):
     """Convert .prt bytes -> (glb_bytes, {'points': .., 'triangles': ..})."""
     coll = mesh_collection(data)
@@ -68,7 +99,7 @@ def convert_to_glb(data, part_name=None):
             src = os.path.join(td, "part.prt")
             with open(src, "wb") as f:
                 f.write(data)
-            coll = parasolid.convert(src, tmpdir=td)
+            coll = _convert_part_path(src)
     tris = sum(len(o["t"]["tris"]) for o in coll)
     pts = sum(len(o["t"]["pts"]) for o in coll)
     with tempfile.TemporaryDirectory() as td:
@@ -81,10 +112,7 @@ def convert_to_glb(data, part_name=None):
 
 def convert_to_files(src, out):
     """CLI core: source .prt -> output destination. Reports progress; raises."""
-    coll = mesh_collection(Path(src).read_bytes())
-    if not coll:
-        print("no embedded-JT mesh; trying the parasolid (OCCT) tier...")
-        coll = parasolid.convert(src)
+    coll = _convert_part_path(src)
     if not coll:
         raise ValueError("no decodable mesh in this .prt file")
     tris = sum(len(o["t"]["tris"]) for o in coll)
