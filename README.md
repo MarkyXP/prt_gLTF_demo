@@ -4,10 +4,11 @@ A Python / [FastAPI](https://fastapi.tiangolo.com/) demo app that converts
 Siemens NX `.prt` files into **glTF 2.0** and renders the result in the
 browser.
 
-The conversion needs no CAD installation or native libraries: the decoder in
-`converter/` is pure-stdlib Python, recovered by reverse engineering the format
-(the `SPLM` and OLE2/CFBF container layouts, the embedded JT v9.4
-tessellation, and the Annex B/D encodings it uses to store the mesh).
+The embedded-JT decoder in `converter/` is pure-stdlib Python, recovered by
+reverse engineering the `SPLM` and OLE2/CFBF container layouts, the embedded JT
+v9.4 tessellation, and the Annex B/D encodings used to store the mesh. Parts
+without usable embedded JT geometry can use the optional Parasolid/OCCT
+fallback described below.
 
 ## Quick start (Windows)
 
@@ -48,6 +49,7 @@ uv pip install --python .venv\Scripts\python.exe "parasolid-kit[occt]"
 | `PRT_PK_EXE` | `.venv\Scripts\parasolid-kit.exe` |
 | `PRT_SCHEMA_DIR` | `converter\schema` |
 | `PRT_OCP_PYTHON` | `.venv\Scripts\python.exe` |
+| `PRT_REFERENCE_ROOT` | Root folder recursively searched for referenced `.prt` files; defaults to the project folder |
 | `PRT_REFERENCE_ROOTS` | Optional `;`-separated server-side search roots |
 
 Explicit environment variables always take precedence. For example, to use a
@@ -61,14 +63,16 @@ $env:PRT_REFERENCE_ROOTS = "J:\VBS\gemini\working;C:\cad\parts"
 py app.py part.prt
 ```
 
-For assembly `.prt` files with no embedded mesh or Parasolid transmit, the
-converter also reads component filenames from `UG_PART/UG_PART` metadata and
-tries matching `.prt` files beside the input. In the web UI, upload the
-assembly and its referenced component files together; the first uploaded file
-is treated as the assembly. The backend also searches `PRT_REFERENCE_ROOTS`
-and any drive/UNC directories embedded in the assembly metadata. Referenced
-files stored only at an unavailable historical/network path cannot be
-resolved automatically.
+For assembly `.prt` files, the converter reads component filenames from
+`UG_PART/UG_PART` metadata and resolves exact `.prt` basenames in this order:
+the parent assembly's directory, recursively under `PRT_REFERENCE_ROOT`, then
+the optional legacy `PRT_REFERENCE_ROOTS` and drive/UNC directories embedded in
+the metadata. The repository `.env` sets `PRT_REFERENCE_ROOT` to the local NX
+parts folder used for this checkout; `.env` is ignored by Git. If the variable
+is absent from both the process environment and `.env`, the project folder is
+used. The first uploaded file is treated as the assembly, and additional
+uploaded files are available beside it. References to NX template/stock names
+are ignored.
 
 ## Web endpoints
 
@@ -108,10 +112,14 @@ resolved automatically.
 * Only the tessellated geometry is converted — not the exact B-rep boundary
   representation.
 * Parasolid-only files run through the optional OCCT fallback: rebuilt
-  transmits are exported per body and tessellated; a small fraction of bodies
-  cannot be re-exported by that toolchain today.
-* Assemblies or external references may render children only if the geometry
-  is embedded in the uploaded file itself.
+  transmits are first exported per body and tessellated. If STEP export rejects
+  bounded circle edges, a direct B-rep path derives their angular trims and
+  builds the valid OCCT faces; other unsupported B-rep cases may still fail.
+* An exact box proxy is replaced by resolved component geometry when all
+  meaningful references are available. If only some components resolve, the
+  proxy is shown as a translucent bounds hint; if none resolve, it remains as
+  an opaque placeholder. Similar filenames are never substituted for an exact
+  assembly reference.
 * Colour attributes are not converted yet.
 
 ## AI usage

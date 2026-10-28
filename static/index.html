@@ -109,6 +109,21 @@ function fitAndCenter(root) {
 function show(gltf, name) {
   if (current) scene.remove(current);
   current = gltf.scene || gltf.scenes[0];
+  // GLTF BLEND materials are normally drawn after opaque geometry, but the
+  // default depthWrite can still let a bounds proxy mask its recovered
+  // components. Keep the proxy depth-tested while preventing depth-buffer
+  // writes so it reads as context rather than as a solid replacement.
+  current.traverse((object) => {
+    if (!object.isMesh) return;
+    const materials = Array.isArray(object.material)
+      ? object.material : [object.material];
+    for (const material of materials) {
+      if (material && material.transparent) {
+        material.depthWrite = false;
+        material.needsUpdate = true;
+      }
+    }
+  });
   fitAndCenter(current);
   scene.add(current);
   renderNote.textContent = '';
@@ -143,7 +158,7 @@ function convert(files) {
   dl.style.display = 'none';
   if (url) URL.revokeObjectURL(url);
   const lookup = new FormData();
-  lookup.append('file', file);
+  for (const part of files) lookup.append('files', part);
   fetch('/references', { method: 'POST', body: lookup })
     .then(async (res) => res.ok ? res.json() : null)
     .then(tree => { if (tree) renderReferences(tree); })
@@ -172,7 +187,29 @@ function convert(files) {
         (gltf) => { gltf.source = blob; show(gltf, name);
                     stats.textContent = '"' + file.name + '" converted: '
                       + info.meshes + ' mesh(es), ' + info.points + ' points, '
-                      + info.triangles + ' triangles.'; },
+                      + info.triangles + ' triangles.'
+                      + (info.assemblies || []).map((assembly) => {
+                          const found = assembly.resolved_count;
+                          const total = assembly.reference_count;
+                          if (assembly.proxy_display === 'placeholder')
+                            return ' Assembly: ' + found + '/' + total
+                              + ' components found; showing placeholder bounds.';
+                          if (assembly.proxy_display === 'translucent-bounds')
+                            return ' Assembly: ' + found + '/' + total
+                              + ' direct components found; translucent bounds mark missing geometry.'
+                              + (assembly.nested_missing_count
+                                ? ' Nested assemblies are incomplete.' : '');
+                          if (assembly.proxy_display === 'suppressed')
+                            return ' Assembly: all ' + total
+                              + ' components found; proxy bounds hidden.';
+                          if (assembly.proxy_display === 'no-proxy'
+                              && (assembly.missing_count
+                                  || assembly.nested_missing_count))
+                            return ' Assembly geometry included; '
+                              + (assembly.missing_count + assembly.nested_missing_count)
+                              + ' referenced components remain unresolved.';
+                          return '';
+                        }).join(''); },
         undefined,
         (err) => { stats.textContent = 'Conversion finished but three.js could not render: ' + err; }
       );
