@@ -156,7 +156,11 @@ function convert(files) {
     .then(async (res) => {
       if (!res.ok) {
         let detail = res.statusText;
-        try { detail = (await res.json()).detail || detail; } catch (e) {}
+        try {
+          const body = await res.json();
+          detail = typeof body.detail === 'string'
+            ? body.detail : JSON.stringify(body.detail || body);
+        } catch (e) {}
         throw new Error('Conversion failed: ' + detail);
       }
       const header = res.headers.get('X-Conversion-Stats');
