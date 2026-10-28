@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import zlib
+import shutil
 
 import ole
 import prt_jt
@@ -87,9 +88,18 @@ def _env(name, default=None):
 def _runtime():
     """-> (kit_exe, schema_dir, ocp_python) or a descriptive error string."""
     here = TJ_SELF
-    kit = _env("PRT_PK_EXE",
-               r"C:\code\nx_reverse_engineering\temp\jt\.para\.venv\Scripts"
-               r"\parasolid-kit.exe")
+    project_root = os.path.dirname(here)
+    project_python = os.path.join(project_root, ".venv", "Scripts",
+                                   "python.exe")
+    candidates = [
+        _env("PRT_PK_EXE"),
+        os.path.join(project_root, ".venv", "Scripts",
+                     "parasolid-kit.exe"),
+        shutil.which("parasolid-kit.exe"),
+        r"C:\code\nx_reverse_engineering\temp\jt\.para\.venv\Scripts"
+        r"\parasolid-kit.exe",
+    ]
+    kit = next((p for p in candidates if p and os.path.isfile(p)), None)
     schema = _env("PRT_SCHEMA_DIR", os.path.join(here, "schema"))
     ocp = _env("PRT_OCP_PYTHON")
     if not kit or not os.path.isfile(kit):
@@ -99,11 +109,13 @@ def _runtime():
     if ocp and not os.path.isfile(ocp):
         ocp = None
     if not ocp:
-        cand = r"C:\code\nx_reverse_engineering\temp\jt\.para\.venv\Scripts" \
-               r"\python.exe"
-        if os.path.isfile(cand):
-            ocp = cand
-        else:
+        candidates = [project_python,
+                      r"C:\code\nx_reverse_engineering\temp\jt\.para\.venv"
+                      r"\Scripts\python.exe"]
+        ocp = next((p for p in candidates if os.path.isfile(p)), None)
+        if ocp:
+            return kit, schema, ocp, None
+        if not ocp:
             return None, None, None, "PRT_OCP_PYTHON not set and no OCP python found"
     return kit, schema, ocp, None
 
@@ -135,6 +147,7 @@ def step_meshes(steps, ocp_python):
 def xbs_to_steps(xbs, tmpdir, kit, schema):
     """Export every x_b to a STEP file inside tmpdir -> list of paths."""
     steps = []
+    errors = []
     for j, xb in enumerate(xbs):
         src = os.path.join(tmpdir, "b%d.x_b" % j)
         stp = os.path.join(tmpdir, "b%d.step" % j)
@@ -146,6 +159,22 @@ def xbs_to_steps(xbs, tmpdir, kit, schema):
                            capture_output=True, text=True, timeout=1800)
         if os.path.exists(stp) and os.path.getsize(stp) >= 200:
             steps.append(stp)
+        else:
+            detail = (r.stderr or r.stdout or "").strip()
+            if detail:
+                try:
+                    report = json.loads(detail)
+                    diagnostics = report.get("report", {}).get("diagnostics", [])
+                    messages = [d.get("message") for d in diagnostics
+                                if d.get("message")]
+                    if messages:
+                        detail = "; ".join(dict.fromkeys(messages))
+                except (TypeError, ValueError):
+                    pass
+                errors.append("body %d: %s" % (j, detail[-2000:]))
+    if not steps and errors:
+        raise RuntimeError("parasolid-kit STEP export failed:\n%s"
+                           % "\n".join(errors))
     return steps
 
 
