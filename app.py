@@ -61,7 +61,7 @@ def mesh_collection(data):
 
 
 def _convert_part_path(path, seen=None):
-    """Resolve embedded geometry, then local referenced parts, if available."""
+    """Prefer Parasolid solids, then referenced parts or embedded JT meshes."""
     path = Path(path).resolve()
     seen = set() if seen is None else seen
     key = str(path).lower()
@@ -70,8 +70,16 @@ def _convert_part_path(path, seen=None):
     seen.add(key)
 
     data = path.read_bytes()
-    coll = mesh_collection(data)
+    primary = None
+    try:
+        coll = parasolid.convert(str(path))
+        if coll:
+            return coll
+    except RuntimeError as ex:
+        primary = ex
+
     refs = parasolid.find_referenced_parts(data, _reference_roots(data))
+    coll = mesh_collection(data)
     if coll and not _is_proxy_collection(coll):
         return coll
     if refs:
@@ -87,23 +95,14 @@ def _convert_part_path(path, seen=None):
             return referenced
     if coll:
         return coll
-    try:
-        return parasolid.convert(str(path))
-    except RuntimeError as primary:
-        refs = parasolid.referenced_part_paths(str(path))
-        for ref in refs:
-            try:
-                coll = _convert_part_path(ref, seen)
-            except RuntimeError:
-                continue
-            if coll:
-                return coll
+    if primary is not None:
         if refs:
             raise RuntimeError("%s; referenced local parts had no usable "
                                "geometry: %s" %
                                (primary, ", ".join(os.path.basename(r)
                                                    for r in refs)))
-        raise
+        raise primary
+    return []
 
 
 def _is_proxy_collection(coll):
