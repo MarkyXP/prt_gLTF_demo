@@ -23,6 +23,25 @@ LIB_DIR = BASE_DIR / "converter"
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 
+
+def _set_runtime_defaults():
+    """Set project-local Parasolid fallback paths without overriding users."""
+    scripts = BASE_DIR / ".venv" / "Scripts"
+    defaults = {
+        "PRT_PK_EXE": scripts / "parasolid-kit.exe",
+        "PRT_SCHEMA_DIR": LIB_DIR / "schema",
+        "PRT_OCP_PYTHON": scripts / "python.exe",
+    }
+    for name, path in defaults.items():
+        if name in os.environ:
+            continue
+        exists = path.is_dir() if name == "PRT_SCHEMA_DIR" else path.is_file()
+        if exists:
+            os.environ[name] = str(path)
+
+
+_set_runtime_defaults()
+
 import prt_jt  # noqa: E402
 import parasolid  # noqa: E402
 

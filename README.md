@@ -32,8 +32,32 @@ PRT_SCHEMA_DIR   # directory with the sch_*.sch_txt schema files
 PRT_OCP_PYTHON   # a Python interpreter with the OCP (OCCT Python) bindings
 ```
 
-Without these variables the fallback is unavailable and such files report
-failure instead of producing an empty model.
+If the executable, schema directory, or OCP interpreter cannot be found, the
+fallback reports a descriptive error instead of producing an empty model.
+
+The recommended setup from the repository root is:
+
+```
+uv pip install --python .venv\Scripts\python.exe "parasolid-kit[occt]"
+```
+
+`app.py` automatically uses these project-local defaults when the files exist:
+
+| Variable | Default |
+|---|---|
+| `PRT_PK_EXE` | `.venv\Scripts\parasolid-kit.exe` |
+| `PRT_SCHEMA_DIR` | `converter\schema` |
+| `PRT_OCP_PYTHON` | `.venv\Scripts\python.exe` |
+
+Explicit environment variables always take precedence. For example, to use a
+separate Parasolid Kit or OCP installation in PowerShell:
+
+```
+$env:PRT_PK_EXE = "C:\path\to\parasolid-kit.exe"
+$env:PRT_SCHEMA_DIR = "C:\path\to\schema"
+$env:PRT_OCP_PYTHON = "C:\path\to\python.exe"
+py app.py part.prt
+```
 
 ## Web endpoints
 
