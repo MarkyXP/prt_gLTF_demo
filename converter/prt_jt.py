@@ -500,7 +500,11 @@ def extract_meshes(x):
         bases = jt_piece_bases(data)
         if not bases:
             continue
-        for pi, base in enumerate(bases):
+        # The first piece is the primary display representation.  Later
+        # pieces are assembly/alternate-display children and require the JT
+        # scene-graph transforms that this decoder does not currently apply;
+        # exporting them raw produces floating duplicate geometry.
+        for pi, base in enumerate(bases[:1]):
             try:
                 jt = parse_jt(data[base:] if base else data)
             except ValueError as ex:
@@ -522,13 +526,23 @@ def _decode_piece(name, pi, base, jt):
     m = {'stream': name, 'piece': pi, 'base': base,
          'summary': jt.summary(), 'warnings': list(jt.warnings), 'meshes': []}
     inflate_cache = inflate_zlib_segments(jt)
+    # A JT piece may contain several Shape LOD segments for the same
+    # representation.  Export only the highest-detail LOD present; treating
+    # every LOD as a separate mesh creates duplicate bodies and stray proxy
+    # geometry (including 4-vertex planes in NX files).
+    lod_segments = [seg for seg in jt.segments if seg.type in (6, 7, 8, 9)]
+    if lod_segments:
+        best_lod = min(seg.type for seg in lod_segments)
+        lod_segments = [seg for seg in lod_segments if seg.type == best_lod]
     for seg_idx, seg in enumerate(jt.segments):
         if seg.type == 1:     # LSG segment (whole-segment compression)
             if seg_idx in inflate_cache:
                 m['lsgAttrs'] = read_lsg_attrs(
                     inflate_cache[seg_idx],
                     [bytes.fromhex(e.guid) for e in jt.toc])
-        if seg.type in (6, 7):   # (LOD0) shape segment, contains the mesh
+        if seg not in lod_segments:
+            continue
+        if seg.type in (6, 7, 8, 9):
             el = split_shape_element(seg.data)
             try:
                 t = decode_trimesh(el['objdata'])
@@ -608,52 +622,67 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
     import json as _json
 
     bufs = bytearray()
-    nodes, meshes_out = [], []
+    nodes, meshes_out, records = [], [], []
     for i, m in enumerate(meshes):
         t = m['t']
         pts, tris = t['pts'], t['tris']
         if not pts or not tris:
             continue
+        cn = t.get('cornerNormals')
+        if cn and len(cn) == 3 * len(tris):
+            # Normals are stored per triangle corner, while positions are
+            # shared topology vertices.  glTF uses one index for all
+            # attributes, so expand the corners instead of pairing a
+            # corner-normal array with position indices.
+            render_pts = []
+            render_normals = []
+            render_tris = []
+            for ti, tri in enumerate(tris):
+                base = len(render_pts)
+                for k, vi in enumerate(tri):
+                    render_pts.append(pts[vi])
+                    render_normals.append(cn[3 * ti + k])
+                render_tris.append((base, base + 1, base + 2))
+        else:
+            render_pts = pts
+            render_normals = None
+            render_tris = tris
         assert len(bufs) % 4 == 0
         prim = {'attributes': {}}
         pos0 = len(bufs)
         prim['_pos0'] = pos0
-        prim['_posCount'] = len(pts)
-        for pt in pts:
+        prim['_posCount'] = len(render_pts)
+        for pt in render_pts:
             for x in pt:
                 bufs += struct.pack('<f', x)
-        assert len(bufs) - pos0 == 12 * len(pts)
+        assert len(bufs) - pos0 == 12 * len(render_pts)
         prim['attributes']['POSITION'] = None   # accessor added below
-        cn = t.get('cornerNormals')
-        if cn and len(cn) == 3 * len(tris):
+        if render_normals is not None:
             n0 = len(bufs)
-            for n in cn:
+            for n in render_normals:
                 for x in n:
                     bufs += struct.pack('<f', x)
-            prim['_norm'] = {'idx': None}
-            prim['_normOff'] = (n0, 3 * len(tris))
+            prim['_normOff'] = (n0, len(render_normals))
         i0 = len(bufs)
-        need32 = bool(tris) and max(max(T) for T in tris) > 65535
-        for T in tris:
+        need32 = bool(render_tris) and max(max(T) for T in render_tris) > 65535
+        for T in render_tris:
             bufs += struct.pack('<III' if need32 else '<HHH', *T)
-        prim['_idx'] = (i0, 3 * len(tris))
+        prim['_idx'] = (i0, 3 * len(render_tris))
         prim['_idxComp'] = 5125 if need32 else 5123
         prim['_idxW'] = 4 if need32 else 2
         prim['_color'] = m.get('color')   # (r,g,b,a) or None -> material ref
-        cent = [sum(p[k] for p in pts) / len(pts) for k in range(3)]
         nodes.append({'name': part_name or ('part-%d' % i),
-                      'mesh': len(meshes_out), 'translation': cent})
+                      'mesh': len(meshes_out)})
         meshes_out.append({'name': 'mesh-%d' % i,
                            'primitives': [prim],
                            'extras': {'sourceStream': m.get('stream')}})
+        records.append((meshes_out[-1], render_pts, render_tris))
 
     # assemble accessors + views with canonical offsets
     # (all offsets are absolute buffer positions recorded in the first loop;
     #  pos0/_normOff/_idx -- byteEnd tracks the running end for sanity only)
     views, accessors, byteEnd = [], [], 0
-    for mo, m in zip(meshes_out, meshes):
-        t = m['t']
-        pts, tris = t['pts'], t['tris']
+    for mo, pts, tris in records:
         prim = mo['primitives'][0]
         vpos = len(views)
         views.append({'buffer': 0, 'byteOffset': prim['_pos0'],
@@ -830,4 +859,3 @@ def _gltf_json_ok(base):
 
 if __name__ == '__main__':
     sys.exit(_main(sys.argv))
-
