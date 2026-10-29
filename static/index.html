@@ -15,6 +15,9 @@
   #drop.over { border-color: #4a9; background: #1a2a1f; }
   #drop input { display: none; }
   #stats { font-size: .85rem; color: #9a9; min-height: 2.5em; }
+  #toggles { display: flex; flex-direction: column; gap: .3rem; font-size: .85rem; }
+  #toggles label { display: flex; align-items: center; gap: .4rem; cursor: pointer;
+                   user-select: none; }
   #refs { flex: 1; min-height: 0; font-size: .8rem; color: #aaa; overflow: auto; }
   #refs .missing { color: #f0a0a0; border: 1px solid #a44; border-radius: .25rem;
                   padding: .15rem .3rem; margin-top: .15rem; }
@@ -43,6 +46,10 @@
     <div id="dropmsg">Drag &amp; drop .prt file(s) here<br>or click to select one</div>
   </div>
   <div id="stats">Ready.</div>
+  <div id="toggles">
+    <label><input type="checkbox" id="tplace" checked> Show placeholder boxes</label>
+    <label><input type="checkbox" id="ttranslucent" checked> See-through envelopes</label>
+  </div>
   <div id="refs"></div>
   <a id="download" download>Download converted .glb</a>
   <div id="render"></div>
@@ -91,6 +98,68 @@ camera.position.set(4, 3, 6);
 const loader = new GLTFLoader();
 let current, url;
 
+// Assembly-proxy styling. GLTFLoader merges the per-mesh glTF `extras` into
+// Mesh.userData (assignExtrasToUserData()), so every Mesh carries
+// mesh.userData.proxyRole and each per-instance node clone keeps a deep copy
+// of it. Proxy bodies are restyled and get a wireframe-outline child per mesh
+// node; normal parts are never touched.
+const chkPlaceholders = document.getElementById('tplace');
+const chkEnvelopes = document.getElementById('ttranslucent');
+const PROXY_EDGE_COLOR = {
+  'translucent-bounds': 0x4a90d9,   // blue envelope outline
+  'placeholder': 0xd98f4a,          // amber outline, body hidden
+};
+let styledProxies = [];
+
+function addEdgeOverlay(mesh, color) {
+  if (!mesh.geometry || !mesh.geometry.attributes.position) return;
+  const overlay = new THREE.LineSegments(
+    new THREE.EdgesGeometry(mesh.geometry, 1),
+    new THREE.LineBasicMaterial({ color: color }));
+  overlay.name = mesh.name + ' wireframe';
+  overlay.renderOrder = 1;
+  mesh.add(overlay);
+}
+
+function styleProxies(root) {
+  styledProxies = [];
+  const proxies = [];
+  root.traverse((object) => {
+    if (object.isMesh && object.userData && object.userData.proxyRole
+        && object.userData.proxyRole in PROXY_EDGE_COLOR) {
+      proxies.push(object);
+    }
+  });
+  for (const mesh of proxies) {
+    const role = mesh.userData.proxyRole;
+    // GLTF material dedup can share one material object across proxy
+    // instances (and in principle with non-proxy meshes); clone before
+    // restyling so nothing else inherits these overrides.
+    mesh.material = mesh.material.clone();
+    if (role === 'placeholder') {
+      mesh.material.visible = false;      // only the wireframe remains
+    } else {
+      mesh.material.transparent = true;   // faint see-through envelope
+      mesh.material.opacity = 0.12;
+      mesh.material.depthWrite = false;
+      mesh.material.side = THREE.DoubleSide;
+    }
+    addEdgeOverlay(mesh, PROXY_EDGE_COLOR[role]);
+    styledProxies.push({ mesh: mesh, role: role });
+  }
+}
+
+function applyProxyVisibility() {
+  for (const entry of styledProxies) {
+    entry.mesh.visible = entry.role === 'placeholder'
+      ? chkPlaceholders.checked
+      : chkEnvelopes.checked;             // child wireframes hide with it
+  }
+}
+
+chkPlaceholders.addEventListener('change', applyProxyVisibility);
+chkEnvelopes.addEventListener('change', applyProxyVisibility);
+
 function fitAndCenter(root) {
   const box = new THREE.Box3().setFromObject(root);
   if (box.isEmpty()) return;
@@ -124,8 +193,10 @@ function show(gltf, name) {
       }
     }
   });
+  styleProxies(current);
   fitAndCenter(current);
   scene.add(current);
+  applyProxyVisibility();
   renderNote.textContent = '';
   url = URL.createObjectURL(gltf.source);   // the raw .glb blob
   dl.href = url;

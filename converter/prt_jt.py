@@ -676,14 +676,25 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
         # the mesh rather than inferring placeholder status from triangle
         # counts after export.
         proxy_role = m.get('proxyRole')
-        nodes.append({'name': part_name or ('part-%d' % i),
+        instances = m.get('instances') or []
+        node_name = part_name or ('part-%d' % i)
+        today = len(instances)
+        if instances:
+            node_name = instances[0].get('name') or node_name
+        nodes.append({'name': node_name,
                       'mesh': len(meshes_out)})
         extras = {'sourceStream': m.get('stream')}
         if proxy_role:
             extras['proxyRole'] = proxy_role
+        if instances:
+            extras['instanceCount'] = today
         meshes_out.append({'name': 'mesh-%d' % i,
                            'primitives': [prim],
                            'extras': extras})
+        for instance in instances:
+            nodes.append({'name': instance.get('name') or node_name,
+                          'mesh': len(meshes_out) - 1,
+                          'matrix': instance['matrix']})
         records.append((meshes_out[-1], render_pts, render_tris))
 
     # assemble accessors + views with canonical offsets

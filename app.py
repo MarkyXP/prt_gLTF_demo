@@ -47,6 +47,8 @@ _set_runtime_defaults()
 import prt_jt  # noqa: E402
 import parasolid  # noqa: E402
 import sub_assembly_resolver  # noqa: E402
+import assembly_pairing  # noqa: E402
+import s19_route_a  # noqa: E402
 
 from fastapi import FastAPI, File, HTTPException, UploadFile  # noqa: E402
 from fastapi.responses import FileResponse, Response  # noqa: E402
@@ -96,6 +98,128 @@ def mesh_collection(data):
     return coll
 
 
+def _child_extent_mm(path):
+    """AABB extent of a child file's meshes in millimetres.
+
+    The embedded-JT decoder stores coordinates in metres; the assembly
+    payload's placement rows are millimetres, so metrics are scaled to a
+    common space for the pairing's geometric feasibility tests.
+    """
+    return tuple(value * 1000.0 for value in jt_mesh_extent(path))
+
+
+def jt_mesh_extent(path=None, data=None):
+    """Per-axis extent of a file/blob's embedded-JT meshes (metres)."""
+    blob = open(path, "rb").read() if path is not None else bytes(data or b"")
+    try:
+        meshes = prt_jt.extract_meshes(blob)
+    except Exception:
+        return (0.0, 0.0, 0.0)
+    points = [point for mesh in meshes
+              for t in mesh["meshes"] for point in t["pts"]]
+    if not points:
+        return (0.0, 0.0, 0.0)
+    return tuple(max(point[a] for point in points)
+                 - min(point[a] for point in points) for a in range(3))
+
+
+def _om_payload(data):
+    """The part's UG_PART/UG_PART stream bytes, or ``None``."""
+    streams = prt_jt.open_prt_bytes(data) if hasattr(prt_jt, "open_prt_bytes") \
+        else None
+    if streams is None:
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "part.prt")
+            with open(src, "wb") as handle:
+                handle.write(data)
+            try:
+                streams = prt_jt.open_prt(src)
+            except Exception:
+                return None
+    for name in sorted(streams):
+        if "UG_PART/UG_PART" in name:
+            return streams[name].data
+    return None
+
+
+def _placement_families(data):
+    """Per-component families from the OM payload; ``None`` if undecodable."""
+    payload = _om_payload(data)
+    if payload is None:
+        return None
+    try:
+        frames = assembly_pairing.placement_frames(payload)
+        records = s19_route_a.records(payload)
+        scoped = assembly_pairing.structured_frames(records, frames)
+        return assembly_pairing.cluster_families(payload, scoped)
+    except Exception:
+        return None
+
+
+def _placement_bundle(stems, coll_by_stem, children_by_stem, families):
+    """Assemble the final instance collection from pairing results.
+
+    ``coll_by_stem`` holds each resolved child's dcc collection so the same
+    mesh data can back several instance nodes (one mesh, k viewers, no
+    per-instance vertex duplication).  Returns ``(coll, notes)`` where
+    notes carry the derivation reports for the upload banner.
+    """
+    notes = []
+    extents = []
+    for stem in stems:
+        path = children_by_stem.get(stem)
+        if path is None:
+            extents.append((stem, None))
+        else:
+            try:
+                extents.append((stem, _child_extent_mm(path)))
+            except Exception:
+                extents.append((stem, None))
+    assignments, residual = assembly_pairing.pair_instances(
+        families, extents)
+    notes.extend(residual)
+    coll = []
+    for key, group in families:
+        stem = assignments.get(key)
+        if stem is None or stem not in coll_by_stem:
+            notes.append("family %s stayed unpaired" % (key,))
+            continue
+        child_coll = coll_by_stem[stem]
+        instances = []
+        for index, frame in enumerate(group):
+            translation = tuple(value / 1000.0 for value in frame["t"])
+            matrix = []  # glTF node matrices are column-major 4x4
+            for column in range(3):
+                matrix.extend([
+                    frame["R"][0][column], frame["R"][1][column],
+                    frame["R"][2][column], 0.0])
+            matrix.extend(translation + (1.0,))
+            instances.append({
+                "matrix": matrix,
+                "name": "%s#%d" % (stem, index),
+            })
+        for entry in child_coll:
+            clone = dict(entry)
+            clone["instances"] = instances
+            clone["stream"] = entry.get("stream", stem)
+            clone["color"] = entry.get("color")
+            coll.append(clone)
+        notes.append("%s: %d instances -> %s"
+                     % (key, len(instances), stem))
+    unpaired = sorted({stem for stem in stems if stem not in assignments})
+    for stem in unpaired:
+        child_coll = coll_by_stem.get(stem) or []
+        if not child_coll:
+            continue
+        coll.extend(dict(entry) for entry in child_coll)
+        notes.append("%s: no feasible child; rendered unplaced" % (stem,))
+    if not coll:
+        notes.append("component pairing stayed ambiguous; rendered without "
+                     "per-instance placement")
+        return None, notes
+    return coll, notes
+
+
 def _convert_part_path(path, seen=None, resolution=None, source_name=None):
     """Prefer Parasolid solids, then referenced parts or embedded JT meshes.
 
@@ -110,9 +234,13 @@ def _convert_part_path(path, seen=None, resolution=None, source_name=None):
     web converter stores its temporary copy under a neutral temporary name.
     """
     path = Path(path).resolve()
-    seen = set() if seen is None else seen
     resolution = {"assemblies": []} if resolution is None else resolution
+    seen = set() if seen is None else seen
+    stash = resolution.setdefault("stash", {})
     key = str(path).lower()
+    cached = stash.get(key)
+    if cached:
+        return cached
     if key in seen:
         return []
     seen.add(key)
@@ -127,6 +255,7 @@ def _convert_part_path(path, seen=None, resolution=None, source_name=None):
         parasolid_coll = parasolid.convert(str(path))
         if (parasolid_coll and not _is_proxy_collection(parasolid_coll)
                 and not ref_names):
+            stash[key] = parasolid_coll
             return parasolid_coll
     except RuntimeError as ex:
         primary = ex
@@ -134,6 +263,7 @@ def _convert_part_path(path, seen=None, resolution=None, source_name=None):
     jt_coll = mesh_collection(data)
     if (jt_coll and not _is_proxy_collection(jt_coll)
             and not ref_names and not parasolid_coll):
+        stash[key] = jt_coll
         return jt_coll
 
     # Keep one representative mesh collection. Prefer exact Parasolid geometry
@@ -146,6 +276,8 @@ def _convert_part_path(path, seen=None, resolution=None, source_name=None):
         coll = jt_coll
     else:
         coll = parasolid_coll or jt_coll
+    if coll:
+        stash[key] = coll
     is_proxy = _is_proxy_collection(coll)
     if not ref_names:
         # A box-shaped mesh without component evidence may be a real block.
@@ -164,6 +296,16 @@ def _convert_part_path(path, seen=None, resolution=None, source_name=None):
     resolved_names = []
     missing_names = []
     nested_missing = []
+    families = None
+    resolved_meshes = {}
+    resolved_paths = {}
+    if ref_names:
+        # Assembly-structure placement families are independent of whether the
+        # parent's own display mesh is an assembly proxy: an assembly can be
+        # genuinely missing its own JT tessellation while every per-instance
+        # transform still lives in the OM record.
+        families = _placement_families(data)
+    site_seen = set()
     for ref_name in ref_names:
         ref = _find_named_part(ref_name, roots, parent_path=path)
         if ref is None:
@@ -176,6 +318,9 @@ def _convert_part_path(path, seen=None, resolution=None, source_name=None):
             child = []
         child_reports = resolution["assemblies"][nested_report_start:]
         if child:
+            stem = sub_assembly_resolver._reference_basename(ref_name)
+            resolved_meshes[stem] = child
+            resolved_paths[stem] = ref
             resolved_names.append(ref_name)
             referenced.extend(child)
             for child_report in child_reports:
@@ -188,6 +333,24 @@ def _convert_part_path(path, seen=None, resolution=None, source_name=None):
                         ref_name, ", ".join(details)))
         else:
             missing_names.append(ref_name)
+
+    if families and resolved_meshes:
+        stems = [stem for stem in resolved_meshes if stem]
+        bundle, pair_notes = _placement_bundle(
+            stems, resolved_meshes, resolved_paths, families)
+    else:
+        bundle, pair_notes = None, []
+    if bundle:
+        resolution["assemblies"].append({
+            "part": logical_name,
+            "references": ref_names,
+            "resolved": resolved_names,
+            "missing": missing_names,
+            "nested_missing": nested_missing,
+            "proxy_display": "placed-instances",
+            "pairing": pair_notes,
+        })
+        return bundle
 
     incomplete = bool(missing_names or nested_missing)
     if is_proxy:
@@ -227,9 +390,7 @@ def _convert_part_path(path, seen=None, resolution=None, source_name=None):
         })
         return coll
 
-    if coll:
-        # Non-proxy geometry remains visible; append any resolved children and
-        # retain their unresolved-reference observations for proxy ancestors.
+    if is_proxy:
         resolution["assemblies"].append({
             "part": logical_name,
             "references": ref_names,
@@ -237,6 +398,7 @@ def _convert_part_path(path, seen=None, resolution=None, source_name=None):
             "missing": missing_names,
             "nested_missing": nested_missing,
             "proxy_display": "no-proxy",
+            "pairing": pair_notes,
         })
         return coll + referenced
 
