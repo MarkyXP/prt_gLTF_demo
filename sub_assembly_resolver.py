@@ -1,9 +1,9 @@
-"""Find exact NX sub-assembly filenames beside a parent or below a data root.
+"""Find exact NX sub-assembly filenames beside a parent or indexed data roots.
 
 The lookup order is intentional: each assembly's own directory is authoritative
-and is checked first, then the configured ``PRT_REFERENCE_ROOT`` tree is walked
-recursively. This prevents an old copy elsewhere in the dataset from taking
-precedence over a sibling part that belongs to the assembly being converted.
+and is checked first, then configured roots are searched in their declared
+order. Configured roots are indexed once at application startup so repeated
+component lookups do not walk the same network trees.
 
 The project does not require python-dotenv just to configure this path. We read
 the one setting we need from the project ``.env`` file, while allowing a real
@@ -12,11 +12,22 @@ process environment variable to override it (as expected for deployments).
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 
 REFERENCE_ROOT_ENV = "PRT_REFERENCE_ROOT"
+LEGACY_REFERENCE_ROOTS_ENV = "PRT_REFERENCE_ROOTS"
+
+
+@dataclass(frozen=True)
+class ReferenceIndex:
+    """Case-insensitive exact filename index for configured search roots."""
+
+    roots: tuple[Path, ...]
+    matches: dict[str, Path]
+    file_count: int
 
 
 def _dotenv_value(env_path: Path, name: str) -> str | None:
@@ -51,8 +62,21 @@ def _dotenv_value(env_path: Path, name: str) -> str | None:
     return None
 
 
-def configured_reference_root(project_dir: str | os.PathLike | None = None) -> Path:
-    """Return PRT_REFERENCE_ROOT from the environment/.env or project fallback.
+def _split_roots(value: str | None) -> list[str]:
+    """Split comma- or platform-separated root paths while preserving order."""
+    if not value:
+        return []
+    separators = [",", os.pathsep]
+    parts = [value]
+    for separator in separators:
+        parts = [part for value_part in parts for part in value_part.split(separator)]
+    return [part.strip().strip("\"'") for part in parts if part.strip()]
+
+
+def configured_reference_roots(
+    project_dir: str | os.PathLike | None = None,
+) -> list[Path]:
+    """Return configured reference roots, falling back to the project folder.
 
     Relative configured paths are interpreted relative to the project root,
     rather than the process's current working directory, so CLI and web runs
@@ -62,13 +86,28 @@ def configured_reference_root(project_dir: str | os.PathLike | None = None) -> P
     configured = os.environ.get(REFERENCE_ROOT_ENV)
     if not configured or not configured.strip():
         configured = _dotenv_value(project_root / ".env", REFERENCE_ROOT_ENV)
-    if not configured:
-        return project_root
+    legacy = os.environ.get(LEGACY_REFERENCE_ROOTS_ENV, "")
+    values = _split_roots(configured) + _split_roots(legacy)
+    if not values:
+        return [project_root]
 
-    root = Path(configured.strip()).expanduser()
-    if not root.is_absolute():
-        root = project_root / root
-    return root.resolve()
+    roots = []
+    seen = set()
+    for value in values:
+        root = Path(value).expanduser()
+        if not root.is_absolute():
+            root = project_root / root
+        root = root.resolve()
+        key = os.path.normcase(str(root))
+        if key not in seen:
+            seen.add(key)
+            roots.append(root)
+    return roots
+
+
+def configured_reference_root(project_dir: str | os.PathLike | None = None) -> Path:
+    """Return the first configured root for backward compatibility."""
+    return configured_reference_roots(project_dir)[0]
 
 
 def _reference_basename(reference_name: str | os.PathLike) -> str:
@@ -103,6 +142,60 @@ def _recursive_match(root: Path, basename: str) -> Path | None:
     return None
 
 
+def build_reference_index(
+    roots: Iterable[str | os.PathLike] | None = None,
+    project_dir: str | os.PathLike | None = None,
+) -> ReferenceIndex:
+    """Walk configured roots once and index their exact filenames."""
+    configured = (
+        list(roots) if roots is not None
+        else configured_reference_roots(project_dir)
+    )
+    normalized = []
+    seen_roots = set()
+    for value in configured:
+        root = Path(value).expanduser().resolve()
+        key = os.path.normcase(str(root))
+        if key not in seen_roots:
+            seen_roots.add(key)
+            normalized.append(root)
+
+    matches = {}
+    file_count = 0
+    for root in normalized:
+        if not root.is_dir():
+            continue
+        for current, directories, files in os.walk(root, followlinks=False):
+            directories.sort(key=str.casefold)
+            for name in sorted(files, key=str.casefold):
+                file_count += 1
+                matches.setdefault(
+                    name.casefold(), (Path(current) / name).resolve())
+    return ReferenceIndex(tuple(normalized), matches, file_count)
+
+
+_REFERENCE_INDEX: ReferenceIndex | None = None
+
+
+def initialize_reference_index(
+    project_dir: str | os.PathLike | None = None,
+) -> ReferenceIndex:
+    """Build and retain the startup index used by subsequent lookups."""
+    global _REFERENCE_INDEX
+    _REFERENCE_INDEX = build_reference_index(project_dir=project_dir)
+    return _REFERENCE_INDEX
+
+
+def reference_index(
+    project_dir: str | os.PathLike | None = None,
+) -> ReferenceIndex:
+    """Return the cached index, creating it lazily for library callers."""
+    global _REFERENCE_INDEX
+    if _REFERENCE_INDEX is None:
+        _REFERENCE_INDEX = build_reference_index(project_dir=project_dir)
+    return _REFERENCE_INDEX
+
+
 def find_sub_assembly(
     reference_name: str | os.PathLike,
     parent_assembly: str | os.PathLike | None = None,
@@ -128,11 +221,20 @@ def find_sub_assembly(
         if match is not None:
             return match
 
-    primary_root = configured_reference_root(project_dir)
-    roots = [primary_root]
-    roots.extend(Path(root).expanduser() for root in additional_roots if root)
-    checked = set()
-    for root in roots:
+    index = reference_index(project_dir)
+    parent_key = (
+        os.path.normcase(str(parent_dir.resolve()))
+        if parent_dir is not None else None
+    )
+    for root in index.roots:
+        if parent_key == os.path.normcase(str(root)):
+            continue
+        match = index.matches.get(basename.casefold())
+        if match is not None:
+            return match
+
+    checked = {os.path.normcase(str(root)) for root in index.roots}
+    for root in (Path(root).expanduser() for root in additional_roots if root):
         try:
             root = root.resolve()
         except OSError:
