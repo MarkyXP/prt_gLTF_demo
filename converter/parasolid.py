@@ -254,12 +254,29 @@ def convert(path, tmpdir=None):
     if err:
         raise RuntimeError("parasolid tier unavailable: %s" % err)
     td = tmpdir or tempfile.mkdtemp(prefix="prt_parasolid_")
-    steps = xbs_to_steps(xbs, td, kit, schema)
-    if not steps:
-        raise RuntimeError(
-            "parasolid-kit produced a usable STEP for 0 of %d bodies "
-            "(known OCCT interop gap)" % len(xbs))
-    meshes = step_meshes(steps, ocp)
-    if not meshes:
-        raise RuntimeError("OCCT tessellation produced no triangles")
-    return meshes
+    primary = None
+    try:
+        steps = xbs_to_steps(xbs, td, kit, schema)
+        if steps:
+            meshes = step_meshes(steps, ocp)
+            if meshes:
+                return meshes
+            primary = RuntimeError("OCCT tessellation produced no triangles")
+        else:
+            primary = RuntimeError(
+                "parasolid-kit produced a usable STEP for 0 of %d bodies "
+                "(known OCCT interop gap)" % len(xbs))
+    except RuntimeError as ex:
+        primary = ex
+
+    # The STEP exporter rejects some bounded analytic edges even when the
+    # source B-Rep is complete. Try the direct B-Rep builder before returning
+    # that exporter failure.
+    try:
+        import occ_brep
+        meshes = occ_brep.convert_xbs(xbs, schema)
+        if meshes:
+            return meshes
+    except Exception:
+        pass
+    raise primary

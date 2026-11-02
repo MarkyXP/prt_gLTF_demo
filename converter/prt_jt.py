@@ -671,11 +671,30 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
         prim['_idxComp'] = 5125 if need32 else 5123
         prim['_idxW'] = 4 if need32 else 2
         prim['_color'] = m.get('color')   # (r,g,b,a) or None -> material ref
-        nodes.append({'name': part_name or ('part-%d' % i),
+        # This extra is consumed by the browser viewer to lower depth writes
+        # for a translucent partial-assembly envelope. Keep it attached to
+        # the mesh rather than inferring placeholder status from triangle
+        # counts after export.
+        proxy_role = m.get('proxyRole')
+        instances = m.get('instances') or []
+        node_name = part_name or ('part-%d' % i)
+        today = len(instances)
+        if instances:
+            node_name = instances[0].get('name') or node_name
+        nodes.append({'name': node_name,
                       'mesh': len(meshes_out)})
+        extras = {'sourceStream': m.get('stream')}
+        if proxy_role:
+            extras['proxyRole'] = proxy_role
+        if instances:
+            extras['instanceCount'] = today
         meshes_out.append({'name': 'mesh-%d' % i,
                            'primitives': [prim],
-                           'extras': {'sourceStream': m.get('stream')}})
+                           'extras': extras})
+        for instance in instances:
+            nodes.append({'name': instance.get('name') or node_name,
+                          'mesh': len(meshes_out) - 1,
+                          'matrix': instance['matrix']})
         records.append((meshes_out[-1], render_pts, render_tris))
 
     # assemble accessors + views with canonical offsets
@@ -732,11 +751,22 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
             prim['material'] = 0
             continue
         key = tuple(round(float(x), 6) for x in col)
+        if len(key) == 3:
+            key += (1.0,)
+        if len(key) != 4:
+            raise ValueError('mesh color must have three or four components')
         if key not in mat_index:
             mat_index[key] = len(materials)
-            materials.append({'name': 'mat-%d' % len(materials),
-                              'pbrMetallicRoughness': {
-                                  'baseColorFactor': [float(x) for x in key]}})
+            material = {'name': 'mat-%d' % len(materials),
+                        'pbrMetallicRoughness': {
+                            'baseColorFactor': [float(x) for x in key]}}
+            if key[3] < 1.0:
+                # glTF requires BLEND for the proxy bounds' alpha to be
+                # honored; the viewer also disables depthWrite for this
+                # material so the box cannot cover resolved child meshes.
+                material['alphaMode'] = 'BLEND'
+                material['doubleSided'] = True
+            materials.append(material)
         prim['material'] = mat_index[key]
     doc = {
         'asset': {'version': '2.0',
