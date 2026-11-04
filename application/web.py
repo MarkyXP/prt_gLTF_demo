@@ -12,6 +12,7 @@ Outputs:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from contextlib import asynccontextmanager
@@ -26,10 +27,15 @@ from .references import reference_roots, reference_tree
 from sub_assembly_resolver import initialize_reference_index
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Build the configured assembly index before serving requests."""
+    LOGGER.info("Application lifespan starting")
     initialize_reference_index(BASE_DIR)
+    LOGGER.info("Application lifespan startup complete")
     yield
 
 
@@ -40,6 +46,16 @@ app = FastAPI(title="prt-gltf-demo", version="1.0.0", lifespan=lifespan)
 def index():
     """Serve the browser viewer."""
     return FileResponse(BASE_DIR / "static" / "index.html")
+
+
+@app.post("/reindex")
+def reindex():
+    """Force a rebuild of the configured assembly reference index."""
+    index = initialize_reference_index(BASE_DIR, force_rebuild=True)
+    return {
+        "file_count": index.file_count,
+        "unique_names": len(index.matches),
+    }
 
 
 @app.post("/references")

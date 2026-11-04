@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
 .env
+.prt-reference-index.json
+.prt-reference-index.json.tmp
 
 TODO.md
