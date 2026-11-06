@@ -25,7 +25,7 @@ from .geometry import (
     mark_proxy,
     mesh_collection,
 )
-from .placement import placement_bundle, placement_families
+from .placement import placement_bundle, placement_families, placement_payload
 from .references import find_named_part, meaningful_part_references, reference_roots
 
 
@@ -209,6 +209,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
     missing_names = []
     nested_missing = []
     families = placement_families(data)
+    om_payload = placement_payload(data)
     resolved_meshes = {}
     resolved_paths = {}
 
@@ -292,7 +293,8 @@ def _convert_part_path(path: str | Path, seen: set[str],
 
     if families and resolved_meshes:
         bundle, pair_notes = placement_bundle(
-            list(resolved_meshes), resolved_meshes, resolved_paths, families)
+            list(resolved_meshes), resolved_meshes, resolved_paths, families,
+            payload=om_payload)
     else:
         bundle, pair_notes = None, []
     if bundle:

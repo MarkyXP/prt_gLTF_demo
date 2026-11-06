@@ -14,12 +14,11 @@ import assembly_pairing
 import s19_route_a
 
 from .geometry import child_extent_mm
+from .serialization import object_model_payload
 
 
 def placement_families(data: bytes):
     """Return structured component placement families, or ``None``."""
-    from .serialization import object_model_payload
-
     payload = object_model_payload(data)
     if payload is None:
         return None
@@ -31,9 +30,14 @@ def placement_families(data: bytes):
     except Exception:
         return None
 
+def placement_payload(data: bytes):
+    """The OM payload the binding helpers read, or ``None``."""
+    return object_model_payload(data)
+
 
 def placement_bundle(stems: list[str], collections: dict[str, list[dict]],
-                     paths: dict[str, str], families):
+                     paths: dict[str, str], families,
+                     payload: bytes | None = None):
     """Attach matched placement matrices to resolved child mesh collections."""
     extents = []
     for stem in stems:

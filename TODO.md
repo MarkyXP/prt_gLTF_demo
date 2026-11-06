@@ -40,3 +40,100 @@ I want this folder to contain a Python / FastAPI app which can demo the .prt to 
   eccentric bearing here). The stronger byte-level join (parent connector id
   found inside the child payload) worked for only one of the four families
   and needs the OM object-table decode to generalize.
+## Display state work (session 2026-11-06, reverse-engineering corpus C:\code\nx_reverse_engineering)
+
+### 1a. Hidden edges in the rendered output (DONE)
+- The viewer's see-through assembly envelopes used to draw all 12 box edges,
+  including the 6 that a paper drawing shows dashed (the far side).
+- `static/index.html` now builds the envelope overlay from the box's
+  12-corner/12-edge graph and redraws only the camera-visible edges each
+  frame: an edge renders iff at least one of its two faces faces the
+  camera (outward-normal dot test with the mesh world matrix). Non-box
+  overlay targets keep the previous full `EdgesGeometry` behaviour.
+- Applies to both `translucent-bounds` (blue) and `placeholder` (amber)
+  envelopes; checkbox toggles keep working.
+
+### 1. Skip suppressed / layer-hidden components (BLOCKED on OM decode)
+- The per-component state exists inside the parent .prt's `UG_PART/UG_PART`
+  object-model region: registry classes `UGS::CONFG_suppress_state`,
+  `CONFG_component_data`, `CONFG_configuration`,
+  `CONFG_instance_position_set`, `CONFG_part_occ_*`,
+  `Assy::Compos::ArrangementContainer`. Wire ids logged this session:
+  configuration=3000, component_data=5000, instance_position_set=10000,
+  part_occ_position_set=11000, part_occ_config_cache=13000,
+  tag_int_map=14000, part_occ_positions=15000, part_occ_data=18000,
+  suppress_state=20000. Present in 13/338 corpus files (all `091_*`).
+- Grid: arrangement names decode from container XML `part/arrangements`
+  (names + Default only); the instance payload (tag -> state) and the
+  occurrence-uuid join (needed to skip specific children) are NOT decoded by
+  anyone yet, so a conservative loader cannot skip suppressed children
+  without risking dropping displayed ones. When the decode lands, the skip
+  hooks go in `application/placement.py` (`placement_bundle` currently
+  attaches every frame) and the resolver would skip the whole child
+  conversion for fully-hidden masters.
+- Second hide channel: object->layer assignment (`UGS::LAYER`,
+  `LAYER_category`, `LAYER_parameter` classes present in the OM) - same
+  blocker, same integration point.
+- Facts + 2 MB hex reference dump for the decode work:
+  `C:\code\nx_reverse_engineering\temp\jt\s26_*`,
+  `learnings/nx-assembly-display-state.md`.
+
+### 2. Correct sub-component placements (working, with a known gap)
+- `converter/assembly_pairing.py` derives per-instance matrices and child
+  families automatically; the b01 assembly validates 7/7 placements against
+  the STEP ground-truth export, family sizes 1/3/2/1.
+- Known gap (documented here previously, unchanged): the family->child-file
+  binding uses a geometric fallback when the per-parent connector ids
+  cannot be resolved to child files, so ambiguous same-size siblings can
+  swap (eccentric vs concentric bearing when one child file fails to
+  resolve). The robust fix is the same `CONFG_*`/tag-object-map decode as
+  item 1 - one OM decode closes both.
+
+### 3. Correct part colours (BLOCKED on OM decode)
+- The NX colour universe lives in the OM next to the state classes:
+  `UGS::COLOR` + `COLOR_table` (palette roster: 190/217 name frames
+  readable in the corpus assembly, classic 216-entry palette names),
+  `Display::SimpleHighEndDisplayMaterial`, `MATTEX_*` shaders, plus
+  `DEDGE_invis_solid_record` for invisible edges.
+- The palette RGB region after the name roster in this file family uses a
+  sparse layout (indexed entry tokens with shifted-binary64 colour atoms),
+  different from the fixed 216-entry grammar documented by the public
+  cadmpeg palette reader; per-object assignment records and the palette
+  token <-> object index join are still open. The embedded JT layer carries
+  no materials, and the vendor-style glTF materials come from the B-rep
+  route outside our scope.
+- Until closed, meshes keep the default neutral material.
+
+## OM record-framing progress (session 2026-11-06 #2, same reverse-engineering workspace)
+
+Decode-work progress toward items 1/2/3 (facts verified on the corpus):
+
+- **OM sections are size-framed**: every object-model area starts with
+  `ff ff ff ff` + 12/16-byte control (`OM` marker, payload length BE) and
+  carries its own class registry as `<len><name>` rows +
+  2-byte registry tails. Registry token grammar now known:
+  `0x00..0x7f` direct value, `0x80..0x8f xx` = `(p-0x80)*256 + low + 1`,
+  `0x90/0xa0..0xaf/0xf1 h l` = wide form. b01's UG_PART holds five sections
+  (main 646 classes incl. the full CONFG set at payload offset 0x6286d).
+- **Per-master name table exists** in the parent OM record area
+  (b01 payload ~0x586xx-0x5900x): rows `39 04 <len> 3c 57 <NAME>` +
+  `@$PART_NAME>`/`@DES>`, one per referenced master (scr, 21_2629 block,
+  LBS000317, ..., with `f1 01 <nn>` wide tokens and `e0 1c 01 71 c1`
+  per-row ids). Scan helper `converter/assembly_pairing.parent_stem_labels`.
+- **The component roster lives in `/Root/FastLoad/Structure`** in classes
+  `UGS::Assy::StructureDescription::{ComponentIdentifier,
+  EntityTypeAndLayerInfo, OccPartFileHistory, PartHints}`; its record area
+  (b01: u32 offset TOC at 0x4a4, records from 0x520) carries per-component
+  rows with arrangement names, reference sets (`SOLID` / `Entire Part` /
+  `Empty`), child file names and atom-triple values.
+  `EntityTypeAndLayerInfo + OM_int_bool_map` is the prime candidate for
+  the layer-visibility decode (item 1).
+- **Family->name join**: the name rows sit ~0x5600 bytes from the
+  placement frames; each side carries `0x81/0x82`-prefixed compact ids in
+  a shared 12-bit id space (e.g. 550/553 in name rows, 550/553/545/337 in
+  frame rows). A direct id-graph join between the two regions is the last
+  step for a deterministic family->child binding; the adjacency-based
+  attempt was removed after verification showed it cannot work, so the
+  geometric pairing fallback remains the shipped behaviour.
+- Verified no regression: b01 GLB output byte-identical to the
+  pre-change pipeline after the rollback of the adjacency attempt.
