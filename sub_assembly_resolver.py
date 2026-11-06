@@ -251,6 +251,17 @@ def _recursive_match(root: Path, basename: str) -> Path | None:
     return None
 
 
+def _is_under_root(path: Path, root: Path) -> bool:
+    """Return whether ``path`` is inside ``root`` without touching the share."""
+    try:
+        return os.path.commonpath((
+            os.path.normcase(str(path)),
+            os.path.normcase(str(root)),
+        )) == os.path.normcase(str(root))
+    except ValueError:
+        return False
+
+
 def build_reference_index(
     roots: Iterable[str | os.PathLike] | None = None,
     project_dir: str | os.PathLike | None = None,
@@ -377,14 +388,25 @@ def find_sub_assembly(
     if parent_assembly is not None:
         parent_path = Path(parent_assembly)
         parent_dir = parent_path if parent_path.is_dir() else parent_path.parent
-        match = _direct_match(parent_dir, basename)
-        if match is not None:
-            return match
 
     index = reference_index(project_dir)
     parent_key = (
         os.path.normcase(str(parent_dir.resolve())) if parent_dir is not None else None
     )
+    indexed_match = index.matches.get(basename.casefold())
+    parent_is_indexed = (
+        parent_dir is not None
+        and any(_is_under_root(parent_dir, root) for root in index.roots)
+    )
+    # A missing name in an indexed parent is authoritative. Avoid iterating a
+    # network directory for every miss; direct scanning remains for parents
+    # outside the indexed snapshot and for possible parent-local duplicates.
+    if parent_dir is not None and (
+            not parent_is_indexed or indexed_match is not None):
+        match = _direct_match(parent_dir, basename)
+        if match is not None:
+            return match
+
     for root in index.roots:
         if parent_key == os.path.normcase(str(root)):
             continue
@@ -399,7 +421,10 @@ def find_sub_assembly(
         except OSError:
             continue
         key = os.path.normcase(str(root))
-        if key in checked or (parent_dir is not None and root == parent_dir.resolve()):
+        covered_by_index = any(_is_under_root(root, indexed_root)
+                               for indexed_root in index.roots)
+        if key in checked or covered_by_index or (
+                parent_dir is not None and root == parent_dir.resolve()):
             continue
         checked.add(key)
         match = _recursive_match(root, basename)

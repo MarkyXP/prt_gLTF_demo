@@ -5,3 +5,4 @@ __pycache__/
 .prt-reference-index.json.tmp
 
 TODO.md
+cache/
