@@ -51,6 +51,7 @@ uv pip install --python .venv\Scripts\python.exe "parasolid-kit[occt]"
 | `PRT_OCP_PYTHON` | `.venv\Scripts\python.exe` |
 | `PRT_REFERENCE_ROOT` | Root folder recursively searched for referenced `.prt` files; defaults to the project folder |
 | `PRT_REFERENCE_ROOTS` | Optional `;`-separated server-side search roots |
+| `PRT_CONVERSION_WORKERS` | Maximum number of top-level assembly parts converted in parallel; defaults to `2` |
 
 Explicit environment variables always take precedence. For example, to use a
 separate Parasolid Kit or OCP installation in PowerShell:
@@ -79,7 +80,9 @@ are ignored.
 | Endpoint   | What it does |
 |---|---|
 | `GET /`        | Minimal HTML page: drag **or** click to upload one or more `.prt` files, then the converted model is rendered with the CDN [three.js](https://threejs.org) `GLTFLoader` and can be downloaded as a single self-contained `.glb`. |
-| `POST /convert`| Multipart file upload (`file` field). Runs the conversion and returns the converted model as `model/gltf-binary` (a self-contained `.glb`, so one response can carry positions + normals + indices). A JSON `400` is returned when the file cannot be decoded. |
+| `POST /convert`| Multipart file upload (`file` field). Starts an asynchronous conversion job and returns its `job_id`. |
+| `GET /convert/{job_id}/status` | Returns conversion progress, completed components, and missing components. |
+| `GET /convert/{job_id}/result` | Returns the completed self-contained `model/gltf-binary` response. |
 
 ### Assembly proxy styling and viewer toggles
 

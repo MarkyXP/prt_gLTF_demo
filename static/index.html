@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <title>.prt to glTF converter</title>
 <style>
   :root { color-scheme: dark; }
@@ -15,6 +16,9 @@
   #drop.over { border-color: #4a9; background: #1a2a1f; }
   #drop input { display: none; }
   #stats { font-size: .85rem; color: #9a9; min-height: 2.5em; }
+  #progress { width: 100%; height: .55rem; accent-color: #4a9; }
+  #refs .component.done { color: #8bd8c0; }
+  #refs .component.active { color: #fff; font-weight: 600; }
   #reindex { padding: .4rem .6rem; border: 1px solid #777; border-radius: .35rem;
              background: #222; color: #ddd; cursor: pointer; }
   #reindex:hover { background: #2a2a2a; }
@@ -50,6 +54,7 @@
     <div id="dropmsg">Drag &amp; drop .prt file(s) here<br>or click to select one</div>
   </div>
   <div id="stats">Ready.</div>
+  <progress id="progress" max="1" value="0" hidden></progress>
   <button id="reindex" type="button">Re-index assembly components</button>
   <div id="toggles">
     <label><input type="checkbox" id="tplace" checked> Show placeholder boxes</label>
@@ -69,6 +74,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 const drop = document.getElementById('drop');
 const fileInput = document.getElementById('file');
 const stats = document.getElementById('stats');
+const progress = document.getElementById('progress');
 const reindex = document.getElementById('reindex');
 const dl = document.getElementById('download');
 const renderNote = document.getElementById('render');
@@ -103,6 +109,7 @@ camera.position.set(4, 3, 6);
 
 const loader = new GLTFLoader();
 let current, url;
+let activeConversion;
 
 // Assembly-proxy styling. GLTFLoader merges the per-mesh glTF `extras` into
 // Mesh.userData (assignExtrasToUserData()), so every Mesh carries
@@ -246,7 +253,28 @@ drop.addEventListener('drop', (e) => {
 
 function convert(files) {
   const file = files[0];
-  stats.textContent = 'Converting "' + file.name + '" ...';
+  const started = performance.now();
+  let phaseStarted = started;
+  activeConversion = { started: started, phaseStarted: phaseStarted };
+  const setPhase = (label) => {
+    phaseStarted = performance.now();
+    activeConversion.phaseStarted = phaseStarted;
+    stats.textContent = label + ' — step 0.0s, total 0.0s';
+  };
+  const updateTimer = () => {
+    stats.textContent = stats.textContent.replace(
+      / — step .*$/, ' — step ' + formatDuration(performance.now() - phaseStarted)
+        + ', total ' + formatDuration(performance.now() - started));
+  };
+  const timer = setInterval(updateTimer, 250);
+  const finish = (message) => {
+    clearInterval(timer);
+    stats.textContent = message;
+  };
+  setPhase('Finding referenced components');
+  progress.hidden = false;
+  progress.value = 0;
+  progress.max = 1;
   refs.textContent = 'Finding referenced components...';
   dl.style.display = 'none';
   if (url) URL.revokeObjectURL(url);
@@ -257,6 +285,7 @@ function convert(files) {
     .then(tree => { if (tree) renderReferences(tree); })
     .catch(() => { refs.textContent = ''; })
     .then(() => {
+      setPhase('Converting on server');
       const form = new FormData();
       for (const part of files) form.append('files', part);
       return fetch('/convert', { method: 'POST', body: form });
@@ -271,17 +300,37 @@ function convert(files) {
         } catch (e) {}
         throw new Error('Conversion failed: ' + detail);
       }
-      const header = res.headers.get('X-Conversion-Stats');
-      const info = header ? JSON.parse(header) : {};
-      const blob = new Blob([await res.arrayBuffer()], { type: 'model/gltf-binary' });
+      const job = await res.json();
+      setPhase('Converting components');
+      return waitForConversion(job.job_id);
+    })
+    .then(async (job) => {
+      if (job.status === 'failed') {
+        throw new Error('Conversion failed: ' + job.error);
+      }
+      setPhase('Loading converted model');
+      const result = await fetch('/convert/' + job.job_id + '/result');
+      if (!result.ok) throw new Error('Conversion result unavailable');
+      const info = job.stats || {};
+      const blob = new Blob([await result.arrayBuffer()], { type: 'model/gltf-binary' });
       const name = file.name.replace(/\.prt$/i, '') + '.glb';
       loader.load(
         URL.createObjectURL(blob),
-        (gltf) => { gltf.source = blob; show(gltf, name);
-                    stats.textContent = '"' + file.name + '" converted: '
-                      + info.meshes + ' mesh(es), ' + info.points + ' points, '
-                      + info.triangles + ' triangles.'
-                      + (info.assemblies || []).map((assembly) => {
+        (gltf) => {
+          gltf.source = blob;
+          show(gltf, name);
+          const timings = info.timings_ms || {};
+          const serverSteps = ['prepare_ms', 'decode_ms', 'serialize_ms']
+            .filter((key) => timings[key] !== undefined)
+            .map((key) => key.replace('_ms', '') + ' '
+              + formatDuration(timings[key])).join(', ');
+          finish('"' + file.name + '" converted: '
+            + info.meshes + ' mesh(es), ' + info.points + ' points, '
+            + info.triangles + ' triangles. Total '
+            + formatDuration(performance.now() - started)
+            + ' (server ' + formatDuration(timings.total_ms || 0)
+            + '; ' + serverSteps + ').'
+            + (info.assemblies || []).map((assembly) => {
                           const found = assembly.resolved_count;
                           const total = assembly.reference_count;
                           if (assembly.proxy_display === 'placeholder')
@@ -302,18 +351,28 @@ function convert(files) {
                               + (assembly.missing_count + assembly.nested_missing_count)
                               + ' referenced components remain unresolved.';
                           return '';
-                        }).join(''); },
+                        }).join(''));
+        },
         undefined,
-        (err) => { stats.textContent = 'Conversion finished but three.js could not render: ' + err; }
+        (err) => { finish('Conversion finished but three.js could not render: ' + err); }
       );
     })
-    .catch((err) => { stats.textContent = String(err.message || err); });
+    .catch((err) => { finish(String(err.message || err)); });
+}
+
+function formatDuration(milliseconds) {
+  const seconds = milliseconds / 1000;
+  return seconds < 10 ? seconds.toFixed(1) + 's' : seconds.toFixed(0) + 's';
 }
 
 function renderReferences(tree) {
   refs.replaceChildren();
+  let count = 0;
   const add = (node, parent, depth) => {
     const row = document.createElement('div');
+    count += 1;
+    row.classList.add('component');
+    row.dataset.partName = node.name.toLowerCase();
     row.textContent = (depth ? '↳ ' : '') + node.name +
       (node.found || !depth ? '' : ' (not found — upload with assembly)');
     if (!node.found && depth) row.classList.add('missing');
@@ -322,6 +381,44 @@ function renderReferences(tree) {
     for (const child of node.children) add(child, parent, depth + 1);
   };
   add(tree, refs, 0);
+  progress.max = Math.max(count, 1);
+  return count;
+}
+
+function updateConversionProgress(state) {
+  const total = Number(progress.max) || 1;
+  progress.value = Math.min(state.completed || 0, total);
+  const current = state.current
+    ? ' "' + state.current + '"' : '';
+  stats.textContent = 'Converting component' + current + ' — '
+    + (state.completed || 0) + '/' + total + ' complete'
+    + ' — step ' + formatDuration(
+      performance.now() - activeConversion.phaseStarted)
+    + ', total ' + formatDuration(
+      performance.now() - activeConversion.started);
+  const completed = new Set((state.completed_parts || [])
+    .map((part) => part.toLowerCase()));
+  const missing = new Set((state.missing_parts || [])
+    .map((part) => part.toLowerCase()));
+  refs.querySelectorAll('.component').forEach((row) => {
+    row.classList.toggle('done', completed.has(row.dataset.partName));
+    row.classList.toggle('missing', missing.has(row.dataset.partName));
+    row.classList.toggle('active', row.dataset.partName
+      === (state.current || '').toLowerCase());
+  });
+}
+
+async function waitForConversion(jobId) {
+  while (true) {
+    const response = await fetch('/convert/' + jobId + '/status');
+    if (!response.ok) throw new Error('Conversion status unavailable');
+    const state = await response.json();
+    state.job_id = jobId;
+    updateConversionProgress(state);
+    if (state.status === 'complete') progress.value = progress.max;
+    if (state.status === 'complete' || state.status === 'failed') return state;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
 }
 </script>
 </body>

@@ -10,21 +10,33 @@ Outputs:
 """
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import prt_jt
 
 from .geometry import mesh_collection
+from .config import conversion_workers
 from .references import copy_referenced_parts
 from .resolver import convert_part_path
 
 
+LOGGER = logging.getLogger(__name__)
+ProgressCallback = Callable[[str, str], None]
+
+
 def convert_to_glb(data: bytes, part_name: str | None = None,
-                   extra_parts: list[tuple[str, bytes]] | None = None):
+                   extra_parts: list[tuple[str, bytes]] | None = None,
+                   progress: ProgressCallback | None = None):
     """Convert .prt bytes to ``(glb_bytes, stats)``."""
+    started = time.perf_counter()
+    timings = {}
     with tempfile.TemporaryDirectory() as temp_dir:
+        step_started = time.perf_counter()
         source = os.path.join(temp_dir, "part.prt")
         Path(source).write_bytes(data)
         for name, part_data in extra_parts or ():
@@ -35,16 +47,43 @@ def convert_to_glb(data: bytes, part_name: str | None = None,
         if Path(source_name).suffix.lower() != ".prt":
             source_name += ".prt"
         copy_referenced_parts(data, temp_dir, source_name)
+        timings["prepare_ms"] = round(
+            (time.perf_counter() - step_started) * 1000, 1)
+        LOGGER.info(
+            "conversion part=%s step=prepare elapsed=%.3fs total=%.3fs",
+            source_name, timings["prepare_ms"] / 1000,
+            (time.perf_counter() - started))
+
         resolution = {"assemblies": []}
+        step_started = time.perf_counter()
+        workers = conversion_workers()
+        LOGGER.info(
+            "conversion part=%s parallel_workers=%d",
+            source_name, workers)
         collection = convert_part_path(
-            source, resolution=resolution, source_name=source_name)
+            source, resolution=resolution, source_name=source_name,
+            progress=progress, parallel_workers=workers)
+        timings["decode_ms"] = round(
+            (time.perf_counter() - step_started) * 1000, 1)
+        LOGGER.info(
+            "conversion part=%s step=decode elapsed=%.3fs total=%.3fs",
+            source_name, timings["decode_ms"] / 1000,
+            (time.perf_counter() - started))
 
     triangles = sum(len(mesh["t"]["tris"]) for mesh in collection)
     points = sum(len(mesh["t"]["pts"]) for mesh in collection)
+    step_started = time.perf_counter()
     with tempfile.TemporaryDirectory() as temp_dir:
         stem = os.path.join(temp_dir, "part")
         prt_jt.write_gltf(collection, stem, glb=True, part_name=part_name)
         glb = Path(stem + ".glb").read_bytes()
+    timings["serialize_ms"] = round(
+        (time.perf_counter() - step_started) * 1000, 1)
+    timings["total_ms"] = round((time.perf_counter() - started) * 1000, 1)
+    LOGGER.info(
+        "conversion part=%s step=serialize elapsed=%.3fs total=%.3fs",
+        part_name or "part", timings["serialize_ms"] / 1000,
+        timings["total_ms"] / 1000)
 
     summaries = [{
         "part": item["part"],
@@ -59,13 +98,19 @@ def convert_to_glb(data: bytes, part_name: str | None = None,
         "triangles": triangles,
         "meshes": len(collection),
         "assemblies": summaries,
+        "timings_ms": timings,
     }
 
 
 def convert_to_files(source: str | Path, output: str | Path):
     """Convert a local .prt path to GLB or glTF/bin files."""
     resolution = {"assemblies": []}
-    collection = convert_part_path(source, resolution=resolution)
+    workers = conversion_workers()
+    LOGGER.info(
+        "conversion part=%s parallel_workers=%d",
+        Path(source).name, workers)
+    collection = convert_part_path(
+        source, resolution=resolution, parallel_workers=workers)
     if not collection:
         raise ValueError("no decodable mesh in this .prt file")
     triangles = sum(len(mesh["t"]["tris"]) for mesh in collection)
