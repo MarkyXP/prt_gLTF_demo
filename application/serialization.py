@@ -15,7 +15,12 @@ import prt_jt
 
 
 def object_model_payload(data: bytes) -> bytes | None:
-    """Return the part's UG_PART/UG_PART stream bytes when present."""
+    """Return the part's UG_PART/UG_PART stream bytes when present.
+
+    > example
+    > object_model_payload(part_bytes)
+      -> the UG_PART/UG_PART payload bytes, or None when unavailable
+    """
     streams = (
         prt_jt.open_prt_bytes(data)
         if hasattr(prt_jt, "open_prt_bytes") else None

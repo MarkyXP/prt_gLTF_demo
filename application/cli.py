@@ -14,11 +14,16 @@ from pathlib import Path
 
 from . import config as _config  # noqa: F401
 from .conversion import convert_to_files
-from sub_assembly_resolver import initialize_reference_index
+from .reference_index import initialize_reference_index
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the CLI and return a process exit code."""
+    """Run the CLI and return a process exit code.
+
+    > example
+    > main(["app.py", "cap.prt", "cap.glb"])
+      -> 0 after writing cap.glb
+    """
     argv = sys.argv if argv is None else argv
     if len(argv) == 2:
         source, output = argv[1], None

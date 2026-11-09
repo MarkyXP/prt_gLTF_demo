@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """s19_route_a.py - Route A: pure-Python .prt -> Parasolid transmit (x_b) reconstruction.
 
-Discovered chain (sessions 19-22):
+Discovered chain:
   .prt (CFBF/SPLM) -> 'UG_PART/UG_PART' stream -> OM container:
       count = u32 @0x220; TOC rows @0x224, 16 B each {X u32, id u32, type u32, offset u32}
       record i = stream[offset_i : offset_{i+1} - 4]   (4-B trailer)
@@ -20,7 +20,15 @@ Discovered chain (sessions 19-22):
       member = desc[base : base+mlen]
       arena = zlib.decompress(member)   (bit31 set)  or member (bit31 clear)
 
-Validation gates: SHA-256 vs the vendor GT captures (s19_frida/*.bin).
+Validation gates: SHA-256 against ground-truth captures (private); run
+this module as a CLI to extract and inventory every Parasolid record of
+a part.
+
+Pure stdlib.
+
+CLI:
+    python converter/s19_route_a.py <part.prt | directory>
+    inventories (record id/type, member/arena lengths, sha16) per file.
 """
 import hashlib
 import struct
@@ -59,7 +67,12 @@ def toc(stream):
 
 
 def records(stream):
-    """Slice records: [off_i, off_{i+1}-4); last record runs to EOF."""
+    """Slice records: [off_i, off_{i+1}-4); last record runs to EOF.
+
+    > example
+    > records(ug_part_payload(path))
+    > -> [{"id": 3, "type": 1, "off": 642, "data": b"OM ..."}, ...]
+    """
     rows = toc(stream)
     out = []
     for i, (x, rid, typ, off) in enumerate(rows):
@@ -95,7 +108,12 @@ def walk_desc(desc):
 
 
 def extract_xb(stream, verbose=False):
-    """Return list of (record, member, arena) for every parasolid record."""
+    """Return list of (record, member, arena) for every parasolid record.
+
+    > example
+    > extract_xb(ug_part_path_payload)
+    > -> [{'rec': {...}, 'member': b'...', 'arena': b'PS...'}, ...]
+    """
     out = []
     for rec in records(stream):
         if rec['type'] not in PS_TYPES:
@@ -121,6 +139,12 @@ def extract_xb(stream, verbose=False):
 
 
 def sha16(b):
+    """First 16 hex chars of the sha256 digest (short evidence ids).
+
+    > example
+    >>> sha16(b"")
+    'e3b0c44298fc1c14'
+    """
     return hashlib.sha256(b).hexdigest()[:16]
 
 

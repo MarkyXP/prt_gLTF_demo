@@ -1,8 +1,24 @@
-# -*- coding: utf-8 -*-
-# emu4.py - correct x86-64 emu for FUN_1800617f0 (CadEx v9 bitlength worker)
-# Ops present: MOV MOVSXD LEA ADD SUB XOR OR INC DEC CDQ CMP TEST
-#              SHL SHR SAR Jcc(JNZ JZ JL JGE JLE JG JS JMP) CMOVL CMOVZ
-#              PUSH POP CALL(const) RET NOP
+"""X86-64 instruction emulator for FUN_1800617f0 (vendor v9 bitlength worker).
+
+Inputs:
+  * Address-labelled assembly listings such as listing_1800617f0.txt kept
+    beside this module.
+  * One CDP bitlength packet for decode_v9_bitlength.
+
+Outputs:
+  * Register/memory state after emulating the fragment.
+  * The worker's decoded signed symbol values (decode_v9_bitlength).
+
+Ops present: MOV MOVSXD LEA ADD SUB XOR OR INC DEC CDQ CMP TEST
+             SHL SHR SAR Jcc(JNZ JZ JL JGE JLE JG JS JMP) CMOVL CMOVZ
+             CMOVNZ CMOVNE CMOVE CMOVS CMOVGE CMOVAE
+             PUSH POP CALL(const) RET NOP
+
+The one supported CALL target (0x180049120, a vector resize the caller
+pre-allocates) returns immediately; other call targets raise.
+
+Python 3.10+/stdlib only.
+"""
 import os, re, struct
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -19,10 +35,21 @@ R32MAP = {"EAX":"RAX","ECX":"RCX","EDX":"RDX","EBX":"RBX","EBP":"RBP","ESI":"RSI
           "RDI":"RDI","RSP":"RSP"}
 
 def sx32(v):
+    """Sign-extend the low 32 bits of a value.
+
+    > example
+    > sx32(0x80000000) -> -2147483648
+    """
     v &= M32
     return v - (1 << 32) if v & 0x80000000 else v
 
 class Emu:
+    """Listing-driven x86-64 fragment emulator for the bitlength worker.
+
+    > example
+    > Emu(_TINY_LISTING).run() -> emulates to RET and sets self.done
+    """
+
     def __init__(self, listing):
         self.code = []
         for line in listing.splitlines():
@@ -41,8 +68,8 @@ class Emu:
         self.steps = 0
         self.done = False
 
-    # memory
     def rd(self, a, size):
+        """Read little-endian bytes from emulated memory."""
         a &= M64
         v = 0
         for k in range(size):
@@ -50,16 +77,16 @@ class Emu:
         return v
 
     def wr(self, a, v, size):
+        """Write little-endian bytes to emulated memory."""
         a &= M64
         v &= (1 << (8*size)) - 1
         for k in range(size):
             self.mem[(a+k) & M64] = (v >> (8*k)) & 0xFF
 
-    # address expression evaluator
     def memaddr(self, expr):
+        """Evaluate an address expression (REG + REG*SCALE + disp form)."""
         e = expr.replace(" ", "")
         if e.startswith("[") and e.endswith("]"): e = e[1:-1]
-        # tokenize signed components: handle form REG + REG*SCALE + disp  or plain
         total = 0
         sgn = 1
         for m in re.finditer(r"([+-]?)([^+-]+)", e):
@@ -79,6 +106,7 @@ class Emu:
         return total & M64
 
     def getr(self, name):
+        """Read a register/enum/immediate/memory operand."""
         name = name.strip()
         full = R32MAP.get(name)
         if full: return self.r[full] & M32
@@ -96,15 +124,17 @@ class Emu:
         raise ValueError("r? " + name)
 
     def getr_s32(self, name):
+        """Read an operand sign-extended from 32 bits."""
         return sx32(self.getr(name))
 
     def setr(self, name, v):
+        """Write a register/memory operand (32-bit writes zero-extend)."""
         name = name.strip()
         if name in self.r: self.r[name] = v & M64; return
         full = R32MAP.get(name)
         if full:
             if full in R64N and name != full:
-                self.r[full] = v & M32          # x86-64: 32-bit write zero-extends
+                self.r[full] = v & M32
             else:
                 self.r[full] = v & M64
             return
@@ -118,6 +148,7 @@ class Emu:
         raise ValueError("w? " + name)
 
     def flag_sub(self, x, y, keepcf=False):
+        """Set ZF/SF/OF/CF for a subtraction and return the result."""
         x &= M32; y &= M32
         r = (x - y) & M32
         xr, yr, rr = x, y, r
@@ -128,6 +159,7 @@ class Emu:
         return r
 
     def flag_add(self, x, y):
+        """Set flags for an addition and return the 32-bit result."""
         x &= M32; y &= M32
         r = (x + y) & M32
         self.zf = 1 if r == 0 else 0
@@ -139,12 +171,14 @@ class Emu:
         return r
 
     def flag_logic(self, r):
+        """Set flags for a bitwise-logic result and return it."""
         self.zf = 1 if (r & M32) == 0 else 0
         self.sf = (r >> 31) & 1
         self.of = self.cf = 0
         return r
 
     def shift(self, dst, cnt, kind):
+        """Emulate SHL/SHR/SAR with flag semantics; n==0 leaves the value."""
         n = cnt & 31
         if n == 0:
             return self.getr(dst)
@@ -157,7 +191,7 @@ class Emu:
             r = (v & M32) >> n
             self.cf = (v >> (n-1)) & 1
             self.of = (v >> 31) & 1
-        else:  # SAR
+        else:
             r = (sx32(v) >> n) & M32
             self.cf = (v >> (n-1)) & 1
             self.of = 0
@@ -165,6 +199,7 @@ class Emu:
         return r
 
     def cond(self, cc):
+        """Evaluate one conditional-code mnemonic against the flag state."""
         if cc in ("Z","E"): return self.zf == 1
         if cc in ("NZ","NE"): return self.zf == 0
         if cc == "L": return self.sf != self.of
@@ -178,6 +213,7 @@ class Emu:
         raise ValueError(cc)
 
     def step(self):
+        """Execute the instruction at the current IP."""
         addr, txt = self.code[self.ip]
         self.ip += 1
         t = txt.split(";")[0].strip()
@@ -277,41 +313,49 @@ class Emu:
             raise ValueError("op? " + t)
 
     def do_call(self, tgt):
+        """Handle CALL targets; only the known vector-resize call is legal."""
         if tgt == 0x180049120:
-            return  # vector resize: caller pre-allocated
+            return
         raise ValueError("unknown call %x at %x" % (tgt, self.code[self.ip-1][0]))
 
     def run(self, maxsteps=5_000_000):
+        """Execute until RET, a bad IP, or the step budget; return steps."""
         while not self.done and 0 <= self.ip < len(self.code) and self.steps < maxsteps:
             self.steps += 1
             self.step()
         return self.steps
 
 
-# ---- worker driver ---------------------------------------------------------
 def decode_v9_bitlength(nvalues, words, nbits, verbose=False):
-    """Runs FUN_1800617f0 on one bitlength packet. Returns list of signed ints."""
+    """Runs FUN_1800617f0 on one bitlength packet. Returns list of signed ints.
+
+    Memory layout used by the driver:
+      state struct at 0x700000 (arg1/rcx), out vector object at 0x701000,
+      its data at 0x702000, words object at 0x703000, its data at 0x704000,
+      entry home slots at 0x710000; [state+8] points at a dword holding
+      nBits; the end sentinel (0xAAAA) trails the words.
+
+    > example
+    > decode_v9_bitlength(cnt, words, nbits, verbose=False)
+    >   -> list of `cnt` signed ints decoded from the packet
+    """
     e = Emu(open(_LISTING, encoding='utf-8', errors='replace').read())
-    ST   = 0x700000   # state struct (rcx)
-    VEC  = 0x701000   # out vector object
-    DATA = 0x702000   # out data storage
-    WOBJ = 0x703000   # words object ([+0]=data ptr)
+    ST   = 0x700000
+    VEC  = 0x701000
+    DATA = 0x702000
+    WOBJ = 0x703000
     WDATA= 0x704000
-    E    = 0x710000   # entry rsp (home slots E+8..E+0x28)
-    # words object
+    E    = 0x710000
     e.wr(WOBJ, WDATA, 8)
     for i, w in enumerate(words):
         e.wr(WDATA + 4*i, w & M32, 4)
-    e.wr(WDATA + 4*len(words) + 8, 0xAAAA, 8)  # end sentinel
-    # out vector: [VEC] = DATA
+    e.wr(WDATA + 4*len(words) + 8, 0xAAAA, 8)
     e.wr(VEC, DATA, 8)
-    # entry-state args (shadow home slots)
-    e.wr(E + 0x08, ST, 8)         # arg1 state ptr
-    e.wr(E + 0x10, nvalues & M32, 4)  # arg2 nValues
-    e.wr(E + 0x18, WOBJ, 8)       # arg3 words obj
-    e.wr(E + 0x20, nbits & M32, 4)# arg4 nBits
-    e.wr(E + 0x28, VEC, 8)        # arg5 out vector
-    # state struct: [state+8] = &(E+0x20) i.e. ptr to a dword holding nBits
+    e.wr(E + 0x08, ST, 8)
+    e.wr(E + 0x10, nvalues & M32, 4)
+    e.wr(E + 0x18, WOBJ, 8)
+    e.wr(E + 0x20, nbits & M32, 4)
+    e.wr(E + 0x28, VEC, 8)
     e.wr(ST + 0x8, E + 0x20, 8)
     e.r["RSP"] = E
     e.r["RCX"] = ST
@@ -324,11 +368,9 @@ def decode_v9_bitlength(nvalues, words, nbits, verbose=False):
     while True:
         cell = e.rd(DATA + 4*i, 4)
         if cell == 0 and i > 0 and e.rd(DATA + 4*(i+1), 4) in (0, 0xAAAA):
-            # heuristic end: got enough? we just read nvalues entries typed by nvalues cap
             pass
         if i >= nvalues:
             break
-        # no sentinel check; read exactly nvalues
         v = sx32(e.rd(DATA + 4*i, 4))
         out.append(v)
         i += 1
@@ -337,11 +379,17 @@ def decode_v9_bitlength(nvalues, words, nbits, verbose=False):
     return out
 
 
+_TINY_LISTING = """
+0x1000: MOV EBX, 5
+0x1010: MOV EAX, 7
+0x1020: ADD EAX, EBX
+0x1030: RET
+"""
+
+
 if __name__ == "__main__":
-    d = open("lod0_obj.bin", "rb").read()
-    cnt   = struct.unpack_from("<i", d, 20)[0]
-    ctbits= struct.unpack_from("<i", d, 30)[0]
-    words = struct.unpack_from("<5I", d, 35)
-    print("FD0", cnt, ctbits, " ".join("%08x" % w for w in words))
-    vals = decode_v9_bitlength(cnt, words, ctbits, verbose=True)
-    print("FD0 syms:", vals)
+    machine = Emu(_TINY_LISTING)
+    machine.run()
+    assert machine.done and machine.r["RAX"] & M32 == 12, (machine.done,
+                                                          machine.r.get("RAX"))
+    print("emu4 self-check ok")

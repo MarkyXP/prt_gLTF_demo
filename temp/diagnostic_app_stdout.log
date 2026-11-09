@@ -1,0 +1,44 @@
+INFO:     127.0.0.1:50181 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50199 - "POST /convert HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50208 - "GET /convert/a4af7a2bba7b4f77b63a0518a4ebe044/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50208 - "GET /convert/a4af7a2bba7b4f77b63a0518a4ebe044/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50208 - "GET /convert/a4af7a2bba7b4f77b63a0518a4ebe044/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50208 - "GET /convert/a4af7a2bba7b4f77b63a0518a4ebe044/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50208 - "GET /convert/a4af7a2bba7b4f77b63a0518a4ebe044/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50208 - "GET /convert/a4af7a2bba7b4f77b63a0518a4ebe044/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50208 - "GET /convert/a4af7a2bba7b4f77b63a0518a4ebe044/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50208 - "GET /convert/a4af7a2bba7b4f77b63a0518a4ebe044/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50208 - "GET /convert/a4af7a2bba7b4f77b63a0518a4ebe044/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50208 - "GET /convert/a4af7a2bba7b4f77b63a0518a4ebe044/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50209 - "GET /convert/a4af7a2bba7b4f77b63a0518a4ebe044/result HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50236 - "GET /static/mesh_diagnostic.html?variant=current&run=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50236 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:50236 - "GET /static/mesh_diagnostic.html?variant=double&run=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50236 - "GET /static/mesh_diagnostic.html?variant=flat&run=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50236 - "GET /static/mesh_diagnostic.html?variant=double_flat&run=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50236 - "GET /static/mesh_diagnostic.html?variant=unlit_front&run=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50236 - "GET /static/mesh_diagnostic.html?variant=unlit&run=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50391 - "GET /static/mesh_diagnostic.html?variant=current&run=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50391 - "GET /static/sensorport_diag_current.glb?v=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50391 - "GET /static/mesh_diagnostic.html?variant=double&run=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50391 - "GET /static/sensorport_diag_double.glb?v=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50391 - "GET /static/mesh_diagnostic.html?variant=flat&run=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50391 - "GET /static/sensorport_diag_flat.glb?v=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50391 - "GET /static/mesh_diagnostic.html?variant=double_flat&run=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50391 - "GET /static/sensorport_diag_double_flat.glb?v=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50391 - "GET /static/mesh_diagnostic.html?variant=unlit_front&run=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50391 - "GET /static/sensorport_diag_current.glb?v=normal-ab-2 HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:50391 - "GET /static/mesh_diagnostic.html?variant=unlit&run=normal-ab-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50445 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:50865 - "GET /static/mesh_diagnostic.html?variant=clip_qd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50866 - "GET /static/mesh_diagnostic.html?variant=clip_qd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50876 - "GET /static/mesh_diagnostic.html?variant=clip_qd&run=clipqd-1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50877 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:50876 - "GET /static/sensorport_diag_current.glb?v=clipqd-1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51026 - "GET /static/mesh_diagnostic.html?variant=current&run=clipqd-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51028 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51026 - "GET /static/sensorport_diag_current.glb?v=clipqd-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51030 - "GET /static/mesh_diagnostic.html?variant=clip_qd&run=clipqd-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50262 - "GET /static/mesh_diagnostic.html?variant=current&run=clipqd-2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50262 - "GET /static/sensorport_diag_current.glb?v=clipqd-2 HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:50286 - "GET /static/mesh_diagnostic.html?variant=clip_qd&run=clipqd-2 HTTP/1.1" 200 OK

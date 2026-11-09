@@ -1,56 +1,47 @@
-"""Recursive part conversion and assembly proxy policy.
+"""Convert one .prt part tree into a normalized mesh collection.
 
 Inputs:
-  * A root .prt path.
-  * Optional resolution state and logical source filename.
+  * A root .prt path (assembly or single part).
+  * Optional resolution state, logical source filename, progress callback,
+    and worker configuration.
 
 Outputs:
   * A normalized mesh collection with assembly instances and proxy roles.
   * Resolution reports for web and CLI diagnostics.
+
+Assembly files with direct embedded-JT geometry skip the Parasolid probe;
+proxy-only assemblies defer it until after child resolution so a complete
+assembly can avoid Parasolid entirely.
 """
 from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from threading import Lock
 
 import parasolid
-import sub_assembly_resolver
 
-from .geometry import (
-    is_proxy_collection,
-    mark_proxy,
-    mesh_collection,
+from .accounting import (
+    ConversionContext,
+    ProgressCallback,
+    count_skip,
+    publish_skip_counts,
 )
-from .placement import placement_bundle, placement_families, placement_payload
-from .references import find_named_part, meaningful_part_references, reference_roots
+from .display import paint_body_display
+from ..geometry import is_proxy_collection, mark_proxy, mesh_collection
+from ..placement import placement_bundle, placement_families, placement_payload
+from ..reference_index import reference_basename
+from ..references import find_named_part, meaningful_part_references, reference_roots
+from ..suppression import is_suppressed_child, suppressed_child_names
 
 
 LOGGER = logging.getLogger(__name__)
-ProgressCallback = Callable[[str, str], None]
 
 
 def _report(progress: ProgressCallback | None, event: str, part: str):
     if progress is not None:
         progress(event, part)
-
-
-class _ConversionContext:
-    """Share completed and in-flight part conversions across workers.
-
-    The in-flight futures are important: independent assembly branches can
-    reference the same part, and waiting for one conversion avoids launching
-    duplicate Parasolid/OCP subprocesses.
-    """
-
-    def __init__(self):
-        self.lock = Lock()
-        self.cache: dict[str, list[dict]] = {}
-        self.inflight: dict[str, Future] = {}
-        self.reports: dict[str, list[dict]] = {}
 
 
 def convert_part_path(path: str | Path, seen: set[str] | None = None,
@@ -59,9 +50,15 @@ def convert_part_path(path: str | Path, seen: set[str] | None = None,
                       progress: ProgressCallback | None = None,
                       parallel_workers: int = 2,
                       parallel_depth: int = 0,
-                      _context: _ConversionContext | None = None) -> list[dict]:
-    """Convert one part, sharing completed work across parallel branches."""
-    context = _context or _ConversionContext()
+                      _context: ConversionContext | None = None) -> list[dict]:
+    """Convert one part, sharing completed work across parallel branches.
+
+    > example
+    > convert_part_path("C:/assemblies/car.prt")
+      -> a mesh dictionary collection for the whole part tree
+    """
+    owns_context = _context is None
+    context = _context or ConversionContext()
     resolved_path = Path(path).resolve()
     key = str(resolved_path).lower()
     if key in context.cache:
@@ -101,6 +98,8 @@ def convert_part_path(path: str | Path, seen: set[str] | None = None,
             (resolution or {}).get("assemblies", []))
         context.inflight.pop(key, None)
         future.set_result(result)
+    if owns_context:
+        publish_skip_counts(context, resolution)
     return result
 
 
@@ -110,8 +109,13 @@ def _convert_part_path(path: str | Path, seen: set[str],
                        progress: ProgressCallback | None,
                        parallel_workers: int,
                        parallel_depth: int,
-                       context: _ConversionContext) -> list[dict]:
-    """Resolve embedded JT geometry first, deferring Parasolid when possible."""
+                       context: ConversionContext) -> list[dict]:
+    """Resolve embedded JT geometry first, deferring Parasolid when possible.
+
+    > example
+    > _convert_part_path(Path("C:/parts/cap.prt"), set(), None, None, None, 2, 0, ConversionContext())
+      -> the mesh collection for that single part file
+    """
     path = Path(path)
     resolution = {"assemblies": []} if resolution is None else resolution
     seen = set() if seen is None else seen
@@ -125,18 +129,12 @@ def _convert_part_path(path: str | Path, seen: set[str],
 
     started = time.perf_counter()
     data = path.read_bytes()
-    read_ms = (time.perf_counter() - started) * 1000
     logical_name = source_name or path.name
     step_started = time.perf_counter()
     roots = reference_roots(data, path.parent)
     ref_names = meaningful_part_references(data, logical_name)
-    references_ms = (time.perf_counter() - step_started) * 1000
-    LOGGER.info(
-        "part=%s step=read+references read=%.3fs references=%.3fs "
-        "refs=%d total=%.3fs",
-        logical_name, read_ms / 1000, references_ms / 1000,
-        len(ref_names), time.perf_counter() - started)
     _report(progress, "started", logical_name)
+    suppressed = suppressed_child_names(data)
 
     primary = None
     parasolid_collection = []
@@ -158,6 +156,13 @@ def _convert_part_path(path: str | Path, seen: set[str],
     step_started = time.perf_counter()
     jt_collection = mesh_collection(data)
     jt_ms = (time.perf_counter() - step_started) * 1000
+    jt_collection, dropped_transparent = paint_body_display(
+        str(path), jt_collection)
+    if dropped_transparent:
+        count_skip(context, "dropped_translucent", dropped_transparent)
+        LOGGER.info(
+            "part=%s step=jt result=dropped-translucent meshes=%d",
+            logical_name, dropped_transparent)
     LOGGER.info(
         "part=%s step=jt elapsed=%.3fs meshes=%d total=%.3fs",
         logical_name, jt_ms / 1000, len(jt_collection),
@@ -165,9 +170,6 @@ def _convert_part_path(path: str | Path, seen: set[str],
 
     direct_jt = bool(
         jt_collection and not is_proxy_collection(jt_collection))
-    # Assembly files with direct JT geometry do not need the expensive
-    # Parasolid probe. For proxy-only assemblies, defer it until after child
-    # resolution so a complete assembly can avoid Parasolid entirely.
     defer_parasolid = bool(ref_names and not direct_jt)
     if ref_names and direct_jt:
         LOGGER.info(
@@ -208,6 +210,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
     resolved_names = []
     missing_names = []
     nested_missing = []
+    skipped_hidden = []
     families = placement_families(data)
     om_payload = placement_payload(data)
     resolved_meshes = {}
@@ -228,6 +231,16 @@ def _convert_part_path(path: str | Path, seen: set[str],
     candidates = []
     for ref_name in ref_names:
         child_started = time.perf_counter()
+        if is_suppressed_child(ref_name, suppressed):
+            skipped_hidden.append(ref_name)
+            count_skip(context, "skipped_hidden")
+            LOGGER.info(
+                "part=%s step=child name=%s result=suppressed elapsed=%.3fs "
+                "total=%.3fs",
+                logical_name, ref_name,
+                time.perf_counter() - child_started,
+                time.perf_counter() - started)
+            continue
         reference = find_named_part(ref_name, roots, parent_path=path)
         if reference is None:
             missing_names.append(ref_name)
@@ -272,7 +285,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
                 time.perf_counter() - started)
             continue
 
-        stem = sub_assembly_resolver._reference_basename(ref_name)
+        stem = reference_basename(ref_name)
         resolved_meshes[stem] = child
         resolved_paths[stem] = reference
         resolved_names.append(ref_name)
@@ -304,6 +317,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
             "resolved": resolved_names,
             "missing": missing_names,
             "nested_missing": nested_missing,
+            "skipped_hidden": skipped_hidden,
             "proxy_display": "placed-instances",
             "pairing": pair_notes,
         })
@@ -329,6 +343,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
                 "resolved": resolved_names,
                 "missing": missing_names,
                 "nested_missing": nested_missing,
+                "skipped_hidden": skipped_hidden,
                 "proxy_display": proxy_display,
             })
             _report(progress, "completed", logical_name)
@@ -340,6 +355,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
             "resolved": [],
             "missing": missing_names or ref_names,
             "nested_missing": nested_missing,
+            "skipped_hidden": skipped_hidden,
             "proxy_display": "placeholder",
         })
         _report(progress, "completed", logical_name)
@@ -351,6 +367,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
         "resolved": resolved_names,
         "missing": missing_names,
         "nested_missing": nested_missing,
+        "skipped_hidden": skipped_hidden,
         "proxy_display": "no-proxy",
         "pairing": pair_notes,
     })

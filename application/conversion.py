@@ -1,4 +1,4 @@
-"""Conversion services for CLI and HTTP callers.
+﻿"""Conversion services for CLI and HTTP callers.
 
 Inputs:
   * Root .prt bytes or a local .prt path.
@@ -6,7 +6,7 @@ Inputs:
 
 Outputs:
   * Self-contained glTF binary bytes or files.
-  * Mesh, point, triangle, and assembly-resolution statistics.
+  * Mesh, point, triangle, assembly-resolution, and skip statistics.
 """
 from __future__ import annotations
 
@@ -17,10 +17,14 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from . import config as _config  # noqa: F401  (loads the bundled library path)
+
 import prt_jt
 
-from .geometry import mesh_collection
+from color_index import body_translucency, part_colour_index
+
 from .config import conversion_workers
+from .geometry import mesh_collection
 from .references import copy_referenced_parts
 from .resolver import convert_part_path
 
@@ -32,7 +36,13 @@ ProgressCallback = Callable[[str, str], None]
 def convert_to_glb(data: bytes, part_name: str | None = None,
                    extra_parts: list[tuple[str, bytes]] | None = None,
                    progress: ProgressCallback | None = None):
-    """Convert .prt bytes to ``(glb_bytes, stats)``."""
+    """Convert .prt bytes to ``(glb_bytes, stats)``.
+
+    > example
+    > convert_to_glb(part_bytes, "cap.prt", progress=callback)
+      -> (glb_bytes, {"points": int, "triangles": int, "meshes": int,
+         "skipped_hidden": int, "dropped_translucent": int, ...})
+    """
     started = time.perf_counter()
     timings = {}
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -47,6 +57,14 @@ def convert_to_glb(data: bytes, part_name: str | None = None,
         if Path(source_name).suffix.lower() != ".prt":
             source_name += ".prt"
         copy_referenced_parts(data, temp_dir, source_name)
+        try:
+            colour_index = part_colour_index(source)
+        except Exception:
+            colour_index = None
+        if colour_index is not None:
+            LOGGER.info(
+                "conversion part=%s colour_index=%s(palette/None)",
+                source_name, colour_index)
         timings["prepare_ms"] = round(
             (time.perf_counter() - step_started) * 1000, 1)
         LOGGER.info(
@@ -97,13 +115,24 @@ def convert_to_glb(data: bytes, part_name: str | None = None,
         "points": points,
         "triangles": triangles,
         "meshes": len(collection),
+        "skipped_hidden": resolution.get("skipped_hidden", 0),
+        "dropped_translucent": resolution.get("dropped_translucent", 0),
+        "colour_index": colour_index,
         "assemblies": summaries,
         "timings_ms": timings,
     }
 
 
 def convert_to_files(source: str | Path, output: str | Path):
-    """Convert a local .prt path to GLB or glTF/bin files."""
+    """Convert a local .prt path to GLB or glTF/bin files.
+
+    Prints per-assembly resolution lines and colour notes against real
+    part data when run directly.
+
+    > example
+    > convert_to_files("C:/parts/car.prt", "C:/out/car.glb")
+      -> ([written paths], points, triangles, mesh count)
+    """
     resolution = {"assemblies": []}
     workers = conversion_workers()
     LOGGER.info(
@@ -113,6 +142,13 @@ def convert_to_files(source: str | Path, output: str | Path):
         source, resolution=resolution, parallel_workers=workers)
     if not collection:
         raise ValueError("no decodable mesh in this .prt file")
+    try:
+        colour_index = part_colour_index(str(source))
+    except Exception:
+        colour_index = None
+    if colour_index is not None:
+        print("part=%s colour_index=%d translucency=%s" % (
+            Path(source).name, colour_index, body_translucency(str(source))))
     triangles = sum(len(mesh["t"]["tris"]) for mesh in collection)
     points = sum(len(mesh["t"]["pts"]) for mesh in collection)
     output = Path(output)
@@ -133,4 +169,14 @@ def convert_to_files(source: str | Path, output: str | Path):
             assembly["part"], assembly["proxy_display"],
             len(assembly["resolved"]), len(assembly["references"]),
             ",".join(assembly["missing"] + assembly["nested_missing"])))
+        for note in assembly.get("pairing") or []:
+            print("  note: %s" % note)
     return written, points, triangles, len(collection)
+
+
+if __name__ == "__main__":
+    import sys
+
+    from .cli import main
+
+    sys.exit(main(sys.argv))

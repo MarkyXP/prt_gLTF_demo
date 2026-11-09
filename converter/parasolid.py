@@ -159,8 +159,6 @@ def _runtime():
         os.path.join(project_root, ".venv", "Scripts",
                      "parasolid-kit.exe"),
         shutil.which("parasolid-kit.exe"),
-        r"C:\code\nx_reverse_engineering\temp\jt\.para\.venv\Scripts"
-        r"\parasolid-kit.exe",
     ]
     kit = next((p for p in candidates if p and os.path.isfile(p)), None)
     schema = _env("PRT_SCHEMA_DIR", os.path.join(here, "schema"))
@@ -172,14 +170,10 @@ def _runtime():
     if ocp and not os.path.isfile(ocp):
         ocp = None
     if not ocp:
-        candidates = [project_python,
-                      r"C:\code\nx_reverse_engineering\temp\jt\.para\.venv"
-                      r"\Scripts\python.exe"]
-        ocp = next((p for p in candidates if os.path.isfile(p)), None)
+        ocp = project_python if os.path.isfile(project_python) else None
         if ocp:
             return kit, schema, ocp, None
-        if not ocp:
-            return None, None, None, "PRT_OCP_PYTHON not set and no OCP python found"
+        return None, None, None, "PRT_OCP_PYTHON not set and no OCP python found"
     return kit, schema, ocp, None
 
 

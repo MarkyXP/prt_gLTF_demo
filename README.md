@@ -60,7 +60,7 @@ separate Parasolid Kit or OCP installation in PowerShell:
 $env:PRT_PK_EXE = "C:\path\to\parasolid-kit.exe"
 $env:PRT_SCHEMA_DIR = "C:\path\to\schema"
 $env:PRT_OCP_PYTHON = "C:\path\to\python.exe"
-$env:PRT_REFERENCE_ROOTS = "J:\VBS\gemini\working;C:\cad\parts"
+$env:PRT_REFERENCE_ROOTS = "D:\cad\parts;E:\more\roots"
 py app.py part.prt
 ```
 
@@ -103,6 +103,19 @@ session) apply immediately to the current model and every later one:
 
 * **Show placeholder boxes** — hides/shows all amber-outline placeholders.
 * **See-through envelopes** — hides/shows the translucent blue envelopes.
+
+A top-right **Display style** panel (over the 3D view) controls rendering of
+non-proxy parts only — proxy placeholders and envelopes are excluded:
+
+* **Shaded / Wireframe** — radio choice, defaults to Shaded. Wireframe sets
+  `material.wireframe` on every non-proxy material.
+* **Override opacity** — unchecked by default, so each component keeps its
+  built-in glTF alpha. Checking it (or moving the slider, which checks it
+  automatically) hard-overrides every non-proxy material to the slider value,
+  unifying mixed transparencies; unchecking restores the original values.
+  At 100% materials become truly opaque (`transparent = false`,
+  `depthWrite = true`); below 100% they become transparent with
+  `depthWrite = false`.
 
 Embedded per-mesh colors and per-instance placement matrices are unaffected:
 proxy overrides are applied to per-mesh cloned materials only, and outlines

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SensorPort mesh diagnostic</title>
+<style>
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #151518; }
+#label { position: absolute; top: 12px; left: 14px; color: white; font: 15px sans-serif; z-index: 2; }
+canvas { display: block; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="label">Loading diagnostic mesh…</div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const parameters = new URLSearchParams(location.search);
+const variant = parameters.get('variant') || 'current';
+const cacheKey = parameters.get('run') || 'current';
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x151518);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.001, 5000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xbfd0ff, 0x404040, 2.2));
+const key = new THREE.DirectionalLight(0xffffff, 2.0);
+key.position.set(3, 6, 4);
+scene.add(key);
+scene.add(new THREE.GridHelper(50, 50, 0x444444, 0x2a2a2a));
+
+const modelVariant = variant === 'clip_qd' || variant.startsWith('unlit')
+  ? 'current' : variant;
+const gltf = await new Promise((resolve, reject) => {
+  new GLTFLoader().load(
+    '/static/sensorport_diag_' + modelVariant + '.glb?v=' + cacheKey,
+    resolve, undefined, reject
+  );
+});
+const root = gltf.scene;
+if (variant.startsWith('unlit')) {
+  root.traverse((object) => {
+    if (!object.isMesh) return;
+    object.material = new THREE.MeshBasicMaterial({
+      color: 0xc1c7cd,
+      side: variant === 'unlit' ? THREE.DoubleSide : THREE.FrontSide,
+    });
+  });
+}
+let clippedFaceCounts = null;
+if (variant === 'clip_qd') {
+  const quantizerBounds = [
+    [-0.024000000208616257, 0.0010000000474974513],
+    [0, 0.02449999935925007],
+    [0, 0.05350000038743019],
+  ];
+  let keptFaces = 0;
+  let totalFaces = 0;
+  root.traverse((object) => {
+    if (!object.isMesh) return;
+    const source = object.geometry;
+    const positions = source.getAttribute('position');
+    const indices = source.index ? source.index.array : null;
+    const retainedVertices = [];
+    const faceCount = indices
+      ? Math.floor(indices.length / 3)
+      : Math.floor(positions.count / 3);
+    totalFaces += faceCount;
+    for (let face = 0; face < faceCount; face += 1) {
+      const vertices = [0, 1, 2].map((corner) => indices
+        ? indices[face * 3 + corner]
+        : face * 3 + corner);
+      const inside = vertices.every((vertex) => {
+        const point = [positions.getX(vertex), positions.getY(vertex),
+          positions.getZ(vertex)];
+        return point.every((value, axis) =>
+          value >= quantizerBounds[axis][0] &&
+          value <= quantizerBounds[axis][1]);
+      });
+      if (inside) {
+        retainedVertices.push(...vertices);
+        keptFaces += 1;
+      }
+    }
+    const filtered = new THREE.BufferGeometry();
+    for (const [name, attribute] of Object.entries(source.attributes)) {
+      const values = [];
+      for (const vertex of retainedVertices) {
+        const start = vertex * attribute.itemSize;
+        values.push(...attribute.array.slice(start, start + attribute.itemSize));
+      }
+      filtered.setAttribute(name, new THREE.BufferAttribute(
+        attribute.array.constructor.from(values), attribute.itemSize,
+        attribute.normalized,
+      ));
+    }
+    filtered.computeBoundingBox();
+    filtered.computeBoundingSphere();
+    object.geometry = filtered;
+  });
+  clippedFaceCounts = [keptFaces, totalFaces];
+}
+const bounds = new THREE.Box3().setFromObject(root);
+const center = bounds.getCenter(new THREE.Vector3());
+const size = bounds.getSize(new THREE.Vector3()).length() || 1;
+root.position.sub(center);
+const axisRoot = new THREE.Group();
+axisRoot.add(root);
+const distance = size * 1.6;
+camera.position.set(distance * 0.7, size * 0.5, distance * 0.7);
+camera.lookAt(0, 0, 0);
+camera.near = Math.max(size / 1000, 0.001);
+camera.far = distance * 100;
+camera.updateProjectionMatrix();
+scene.add(axisRoot);
+
+const suspectFaces = [2396, 2418, 2819, 2821, 2822, 2850, 2858, 2859,
+  3690, 3693, 3695, 3700, 3759];
+const controlFaces = [292, 590, 3175, 4441];
+const outsideQuantizerFaces = [
+  4008, 4009, 4010, 4011, 4012, 4013, 4015,
+  2596, 2597, 2598, 2600, 2603, 2604,
+];
+let targetMesh;
+root.traverse((object) => { if (!targetMesh && object.isMesh) targetMesh = object; });
+function addFaceMarkers(indices, color) {
+  const source = targetMesh.geometry.getAttribute('position').array;
+  const vertices = [];
+  for (const face of indices) {
+    const offset = face * 9;
+    if (offset + 8 >= source.length) continue;
+    const corners = [
+      [source[offset], source[offset + 1], source[offset + 2]],
+      [source[offset + 3], source[offset + 4], source[offset + 5]],
+      [source[offset + 6], source[offset + 7], source[offset + 8]],
+    ];
+    for (const [first, second] of [[0, 1], [1, 2], [2, 0]]) {
+      vertices.push(...corners[first], ...corners[second]);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+  const lines = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+    color: color, depthTest: false, transparent: false,
+  }));
+  root.add(lines);
+}
+if (!variant.startsWith('lod') && !variant.startsWith('unlit') &&
+    variant !== 'clip_qd') {
+  addFaceMarkers(suspectFaces, 0xff33cc);
+  addFaceMarkers(outsideQuantizerFaces, 0xffaa22);
+  addFaceMarkers(controlFaces, 0x33ddff);
+}
+document.getElementById('label').textContent = variant === 'clip_qd'
+  ? variant + ' | diagnostic-only coordQuant clip (LOD0 quantBits=0): ' +
+    clippedFaceCounts[0] + '/' + clippedFaceCounts[1] + ' triangles kept'
+  : variant.startsWith('lod')
+    ? variant + ' | full coarse-LOD geometry'
+    : variant.startsWith('unlit')
+      ? variant + ' | same positions and triangles'
+      : variant + ' | normals magenta | out-of-q-range orange | controls cyan';
+renderer.render(scene, camera);
+await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+window.__diagnosticReady = true;
+</script>
+</body>
+</html>

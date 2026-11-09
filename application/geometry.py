@@ -18,7 +18,12 @@ import prt_jt
 
 
 def mesh_collection(data: bytes) -> list[dict]:
-    """Decode every embedded-JT mesh into the glTF writer's input shape."""
+    """Decode every embedded-JT mesh into the glTF writer's input shape.
+
+    > example
+    > mesh_collection(part_bytes)
+      -> [{"stream": name, "t": triangle mesh, "color": rgb or None}, ...]
+    """
     collection = []
     for mesh in prt_jt.extract_meshes(data):
         for triangle_mesh in mesh["meshes"]:
@@ -32,7 +37,12 @@ def mesh_collection(data: bytes) -> list[dict]:
 
 def jt_mesh_extent(path: str | Path | None = None,
                    data: bytes | None = None) -> tuple[float, float, float]:
-    """Return per-axis extent of embedded-JT meshes in metres."""
+    """Return per-axis extent of embedded-JT meshes in metres.
+
+    > example
+    > jt_mesh_extent(path="cap.prt")
+      -> (0.04, 0.03, 0.05), or all-zero when nothing decodes
+    """
     blob = Path(path).read_bytes() if path is not None else bytes(data or b"")
     try:
         meshes = prt_jt.extract_meshes(blob)
@@ -54,12 +64,22 @@ def jt_mesh_extent(path: str | Path | None = None,
 
 
 def child_extent_mm(path: str | Path) -> tuple[float, float, float]:
-    """Return a child mesh extent in millimetres."""
+    """Return a child mesh extent in millimetres.
+
+    > example
+    > child_extent_mm("cap.prt")
+      -> (40.0, 30.0, 50.0) for the same part as jt_mesh_extent above
+    """
     return tuple(value * 1000.0 for value in jt_mesh_extent(path))
 
 
 def mark_proxy(collection: list[dict], role: str) -> None:
-    """Annotate proxy meshes for GLB styling and conversion reporting."""
+    """Annotate proxy meshes for GLB styling and conversion reporting.
+
+    > example
+    > mark_proxy(collection, "placeholder")
+      -> None; every entry gains proxyRole, translucent-bounds gains colour
+    """
     for mesh in collection:
         mesh["proxyRole"] = role
         if role == "translucent-bounds":
@@ -67,14 +87,26 @@ def mark_proxy(collection: list[dict], role: str) -> None:
 
 
 def is_proxy_collection(collection: list[dict]) -> bool:
-    """Recognize axis-aligned box candidates, not assemblies by themselves."""
+    """Recognize axis-aligned box candidates, not assemblies by themselves.
+
+    > example
+    > is_proxy_collection([{"t": box_mesh}])
+      -> True when every mesh is exactly an axis-aligned box boundary
+    """
     return bool(collection) and all(
         is_axis_aligned_box(mesh["t"]) for mesh in collection
     )
 
 
 def is_axis_aligned_box(mesh: dict) -> bool:
-    """Check that a triangulated mesh is exactly the expected AABB boundary."""
+    """Check that a triangulated mesh is exactly the expected AABB boundary.
+
+    Eight points and twelve triangles must form the six box sides exactly.
+
+    > example
+    > is_axis_aligned_box({"pts": 8 corners, "tris": 12 side triangles})
+      -> True, or False for any other shape or malformed topology
+    """
     points = mesh.get("pts", [])
     triangles = mesh.get("tris", [])
     if len(points) != 8 or len(triangles) != 12:

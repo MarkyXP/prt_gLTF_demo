@@ -1,12 +1,12 @@
 """FastAPI endpoints for the .prt to glTF web application.
 
 Inputs:
-  * GET requests for the viewer.
+  * GET requests for the viewer and its static assets.
   * Multipart .prt uploads via ``files`` or legacy ``file`` fields.
 
 Outputs:
   * The static viewer.
-  * JSON reference trees.
+  * JSON reference trees and conversion-job progress.
   * Self-contained ``model/gltf-binary`` responses.
 """
 from __future__ import annotations
@@ -23,11 +23,12 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from .config import BASE_DIR
 from .conversion import convert_to_glb
+from .reference_index import initialize_reference_index
 from .references import reference_roots, reference_tree
-from sub_assembly_resolver import initialize_reference_index
 
 
 LOGGER = logging.getLogger(__name__)
@@ -36,6 +37,12 @@ _conversion_jobs: dict[str, dict] = {}
 
 async def _run_conversion(job_id: str, data: bytes, part_name: str,
                           extra_parts: list[tuple[str, bytes]]):
+    """Run one conversion job in a worker thread and record progress.
+
+    > example
+    > asyncio.create_task(_run_conversion(job_id, part_bytes, part_name, []))
+      -> the job dict transitions queued -> running -> complete|failed
+    """
     job = _conversion_jobs[job_id]
 
     def progress(event: str, part: str):
@@ -48,6 +55,7 @@ async def _run_conversion(job_id: str, data: bytes, part_name: str,
             job["completed"] += 1
             job["missing_parts"].append(part)
 
+    job["current"] = None
     job["status"] = "running"
     try:
         glb, stats = await asyncio.to_thread(
@@ -64,7 +72,12 @@ async def _run_conversion(job_id: str, data: bytes, part_name: str,
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Build the configured assembly index before serving requests."""
+    """Build the configured assembly index before serving requests.
+
+    > example
+    > async with lifespan(app):
+      -> the reference index is loaded before any request is served
+    """
     LOGGER.info("Application lifespan starting")
     initialize_reference_index(BASE_DIR)
     LOGGER.info("Application lifespan startup complete")
@@ -72,17 +85,28 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="prt-gltf-demo", version="1.0.0", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
 @app.get("/")
 def index():
-    """Serve the browser viewer."""
+    """Serve the browser viewer.
+
+    > example
+    > GET /
+      -> 200 with the viewer markup from static/index.html
+    """
     return FileResponse(BASE_DIR / "static" / "index.html")
 
 
 @app.post("/reindex")
 def reindex():
-    """Force a rebuild of the configured assembly reference index."""
+    """Force a rebuild of the configured assembly reference index.
+
+    > example
+    > POST /reindex
+      -> {"file_count": int, "unique_names": int}
+    """
     index = initialize_reference_index(BASE_DIR, force_rebuild=True)
     return {
         "file_count": index.file_count,
@@ -93,7 +117,12 @@ def reindex():
 @app.post("/references")
 async def references(files: list[UploadFile] | None = File(None),
                      file: UploadFile | None = File(None)):
-    """Return the component tree for all uploaded assembly files."""
+    """Return the component tree for all uploaded assembly files.
+
+    > example
+    > POST /references with a .prt upload
+      -> {"name": ..., "found": bool, "children": [child nodes, ...]}
+    """
     uploads = files or ([file] if file is not None else [])
     if not uploads:
         raise HTTPException(status_code=400, detail="no .prt files uploaded")
@@ -120,7 +149,12 @@ async def references(files: list[UploadFile] | None = File(None),
 @app.post("/convert")
 async def convert(files: list[UploadFile] | None = File(None),
                   file: UploadFile | None = File(None)):
-    """Start an asynchronous .prt conversion job."""
+    """Start an asynchronous .prt conversion job.
+
+    > example
+    > POST /convert with a .prt upload
+      -> {"job_id": "..."} for the status/result endpoints
+    """
     uploads = files or ([file] if file is not None else [])
     if not uploads:
         raise HTTPException(status_code=400, detail="no .prt files uploaded")
@@ -149,7 +183,12 @@ async def convert(files: list[UploadFile] | None = File(None),
 
 @app.get("/convert/{job_id}/status")
 async def conversion_status(job_id: str):
-    """Return progress for an asynchronous conversion job."""
+    """Return progress for an asynchronous conversion job.
+
+    > example
+    > GET /convert/<job_id>/status
+      -> {"status": "running", "completed": int, "current": name, ...}
+    """
     job = _conversion_jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="conversion job not found")
@@ -161,7 +200,13 @@ async def conversion_status(job_id: str):
 
 @app.get("/convert/{job_id}/result")
 async def conversion_result(job_id: str):
-    """Return the completed GLB for a conversion job."""
+    """Return the completed GLB for a conversion job.
+
+    > example
+    > GET /convert/<job_id>/result
+      -> the ``model/gltf-binary`` body with X-Conversion-Stats attached,
+      404/400/409 for unknown/failed/incomplete jobs
+    """
     job = _conversion_jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="conversion job not found")
