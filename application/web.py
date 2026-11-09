@@ -19,6 +19,7 @@ import tempfile
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import Lock
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -26,13 +27,32 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .config import BASE_DIR
-from .conversion import convert_to_glb
+from .conversion import _collection_to_glb, convert_to_glb
 from .reference_index import initialize_reference_index
 from .references import reference_roots, reference_tree
 
 
 LOGGER = logging.getLogger(__name__)
 _conversion_jobs: dict[str, dict] = {}
+
+
+def _build_reference_tree(name: str,
+                          payloads: list[tuple[str, bytes]]) -> dict:
+    """Build a reference tree without blocking the async request loop.
+
+    > example
+    > _build_reference_tree("car.prt", [("car.prt", part_bytes)])
+      -> {"name": "car.prt", "found": bool, "children": [...]}
+    """
+    root_data = payloads[0][1]
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for filename, payload in payloads:
+            safe_name = os.path.basename(filename)
+            if safe_name:
+                Path(temp_dir, safe_name).write_bytes(payload)
+        roots = reference_roots(root_data, temp_dir)
+        root_path = Path(temp_dir) / os.path.basename(name)
+        return reference_tree(name, root_data, roots, parent_path=root_path)
 
 
 async def _run_conversion(job_id: str, data: bytes, part_name: str,
@@ -46,26 +66,46 @@ async def _run_conversion(job_id: str, data: bytes, part_name: str,
     job = _conversion_jobs[job_id]
 
     def progress(event: str, part: str):
-        if event == "started":
-            job["current"] = part
-        elif event == "completed":
-            job["completed"] += 1
-            job["completed_parts"].append(part)
-        elif event == "missing":
-            job["completed"] += 1
-            job["missing_parts"].append(part)
+        with job["lock"]:
+            if event == "started":
+                job["current"] = part
+            elif event == "completed":
+                job["completed"] += 1
+                job["completed_parts"].append(part)
+            elif event == "missing":
+                job["completed"] += 1
+                job["missing_parts"].append(part)
 
-    job["current"] = None
-    job["status"] = "running"
+    def artifact(path: str, part: str, collection: list[dict]):
+        key = os.path.normcase(os.path.abspath(path))
+        glb = _collection_to_glb(collection, part)
+        artifact_id = uuid4().hex
+        with job["lock"]:
+            if key in job["artifact_keys"]:
+                return
+            job["artifact_keys"].add(key)
+            job["artifacts"].append({
+                "id": artifact_id,
+                "part": part,
+                "status": "available",
+                "url": "/convert/%s/artifacts/%s" % (job_id, artifact_id),
+                "glb": glb,
+            })
+
+    with job["lock"]:
+        job["current"] = None
+        job["status"] = "running"
     try:
         glb, stats = await asyncio.to_thread(
-            convert_to_glb, data, part_name, extra_parts, progress)
-        job.update(status="complete", current=None, glb=glb, stats=stats)
+            convert_to_glb, data, part_name, extra_parts, progress, artifact)
+        with job["lock"]:
+            job.update(status="complete", current=None, glb=glb, stats=stats)
         LOGGER.info(
             "conversion job=%s file=%s status=complete",
             job_id, part_name)
     except Exception as error:
-        job.update(status="failed", current=None, error=str(error))
+        with job["lock"]:
+            job.update(status="failed", current=None, error=str(error))
         LOGGER.exception(
             "conversion job=%s file=%s status=failed", job_id, part_name)
 
@@ -131,15 +171,7 @@ async def references(files: list[UploadFile] | None = File(None),
     started = time.perf_counter()
     payloads = [(upload.filename or "", await upload.read())
                 for upload in uploads]
-    root_data = payloads[0][1]
-    with tempfile.TemporaryDirectory() as temp_dir:
-        for filename, payload in payloads:
-            safe_name = os.path.basename(filename)
-            if safe_name:
-                Path(temp_dir, safe_name).write_bytes(payload)
-        roots = reference_roots(root_data, temp_dir)
-        root_path = Path(temp_dir) / os.path.basename(name)
-        result = reference_tree(name, root_data, roots, parent_path=root_path)
+    result = await asyncio.to_thread(_build_reference_tree, name, payloads)
     LOGGER.info(
         "request=/references file=%s uploads=%d elapsed=%.3fs",
         name, len(payloads), time.perf_counter() - started)
@@ -172,6 +204,9 @@ async def convert(files: list[UploadFile] | None = File(None),
         "completed": 0,
         "completed_parts": [],
         "missing_parts": [],
+        "artifacts": [],
+        "artifact_keys": set(),
+        "lock": Lock(),
     }
     LOGGER.info(
         "request=/convert file=%s job=%s uploads=%d",
@@ -192,10 +227,42 @@ async def conversion_status(job_id: str):
     job = _conversion_jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="conversion job not found")
-    return {
-        key: value for key, value in job.items()
-        if key not in {"glb", "error"} or key == "error"
-    }
+    with job["lock"]:
+        state = {
+            key: value for key, value in job.items()
+            if key not in {"glb", "error", "artifact_keys", "artifacts", "lock"}
+        }
+        state["artifacts"] = [
+            {key: value for key, value in item.items() if key != "glb"}
+            for item in job["artifacts"]
+        ]
+        if "error" in job:
+            state["error"] = job["error"]
+    return state
+
+
+@app.get("/convert/{job_id}/artifacts/{artifact_id}")
+async def conversion_artifact(job_id: str, artifact_id: str):
+    """Return one completed per-part GLB artifact.
+
+    > example
+    > GET /convert/<job_id>/artifacts/<artifact_id>
+      -> the completed ``model/gltf-binary`` body
+    """
+    job = _conversion_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="conversion job not found")
+    with job["lock"]:
+        artifact = next(
+            (item for item in job["artifacts"] if item["id"] == artifact_id),
+            None)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="conversion artifact not found")
+    return Response(
+        content=artifact["glb"],
+        media_type="model/gltf-binary",
+        headers={"Content-Disposition": 'inline; filename="%s.glb"' % artifact_id},
+    )
 
 
 @app.get("/convert/{job_id}/result")
@@ -210,13 +277,17 @@ async def conversion_result(job_id: str):
     job = _conversion_jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="conversion job not found")
-    if job["status"] == "failed":
-        raise HTTPException(status_code=400, detail=job["error"])
-    if job["status"] != "complete":
+    with job["lock"]:
+        status = job["status"]
+        error = job.get("error")
+        glb = job.get("glb")
+        stats = job.get("stats")
+    if status == "failed":
+        raise HTTPException(status_code=400, detail=error)
+    if status != "complete":
         raise HTTPException(status_code=409, detail="conversion is not complete")
-    stats = job["stats"]
     return Response(
-        content=job["glb"],
+        content=glb,
         media_type="model/gltf-binary",
         headers={
             "Content-Disposition": 'attachment; filename="%s.glb"'

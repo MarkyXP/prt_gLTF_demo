@@ -26,16 +26,30 @@ from color_index import body_translucency, part_colour_index
 from .config import conversion_workers
 from .geometry import mesh_collection
 from .references import copy_referenced_parts
-from .resolver import convert_part_path
+from .resolver import ArtifactCallback, convert_part_path
 
 
 LOGGER = logging.getLogger(__name__)
 ProgressCallback = Callable[[str, str], None]
 
 
+def _collection_to_glb(collection: list[dict], part_name: str) -> bytes:
+    """Serialize one completed collection to an in-memory GLB artifact.
+
+    > example
+    > _collection_to_glb([], "part")
+      -> raises only when the writer rejects the collection
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        stem = os.path.join(temp_dir, "part")
+        prt_jt.write_gltf(collection, stem, glb=True, part_name=part_name)
+        return Path(stem + ".glb").read_bytes()
+
+
 def convert_to_glb(data: bytes, part_name: str | None = None,
                    extra_parts: list[tuple[str, bytes]] | None = None,
-                   progress: ProgressCallback | None = None):
+                   progress: ProgressCallback | None = None,
+                   artifact: ArtifactCallback | None = None):
     """Convert .prt bytes to ``(glb_bytes, stats)``.
 
     > example
@@ -80,7 +94,8 @@ def convert_to_glb(data: bytes, part_name: str | None = None,
             source_name, workers)
         collection = convert_part_path(
             source, resolution=resolution, source_name=source_name,
-            progress=progress, parallel_workers=workers)
+            progress=progress, artifact=artifact,
+            parallel_workers=workers)
         timings["decode_ms"] = round(
             (time.perf_counter() - step_started) * 1000, 1)
         LOGGER.info(

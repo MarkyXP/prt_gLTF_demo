@@ -81,8 +81,16 @@ are ignored.
 |---|---|
 | `GET /`        | Minimal HTML page: drag **or** click to upload one or more `.prt` files, then the converted model is rendered with the CDN [three.js](https://threejs.org) `GLTFLoader` and can be downloaded as a single self-contained `.glb`. |
 | `POST /convert`| Multipart file upload (`file` field). Starts an asynchronous conversion job and returns its `job_id`. |
-| `GET /convert/{job_id}/status` | Returns conversion progress, completed components, and missing components. |
+| `GET /convert/{job_id}/status` | Returns conversion progress, completed components, missing components, and completed progressive artifact metadata. |
+| `GET /convert/{job_id}/artifacts/{artifact_id}` | Returns a completed leaf-part GLB as soon as that part is converted. |
 | `GET /convert/{job_id}/result` | Returns the completed self-contained `model/gltf-binary` response. |
+
+During assembly conversion, completed leaf parts are serialized as job-scoped
+GLB artifacts and the viewer loads them immediately while the remaining parts
+are processed. These interim parts are shown as an incremental, unplaced
+preview; the final assembled GLB remains authoritative and replaces the
+preview when conversion completes. The final result/download contract is
+unchanged.
 
 ### Assembly proxy styling and viewer toggles
 

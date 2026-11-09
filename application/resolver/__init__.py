@@ -14,5 +14,5 @@ filtered before conversion; see ``display.py`` and the package-level
 ``pipeline.py``, ``display.py``, and ``accounting.py`` to stay under the
 repo's 400-line budget per file.
 """
-from .accounting import ConversionContext, ProgressCallback
+from .accounting import ArtifactCallback, ConversionContext, ProgressCallback
 from .pipeline import convert_part_path

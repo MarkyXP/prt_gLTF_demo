@@ -34,8 +34,8 @@ renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 scene.add(new THREE.HemisphereLight(0xbfd0ff, 0x404040, 2.2));
 const key = new THREE.DirectionalLight(0xffffff, 2.0);
-key.position.set(3, 6, 4);
 scene.add(key);
+scene.add(key.target);
 scene.add(new THREE.GridHelper(50, 50, 0x444444, 0x2a2a2a));
 
 const modelVariant = variant === 'clip_qd' || variant.startsWith('unlit')
@@ -118,6 +118,8 @@ axisRoot.add(root);
 const distance = size * 1.6;
 camera.position.set(distance * 0.7, size * 0.5, distance * 0.7);
 camera.lookAt(0, 0, 0);
+key.position.copy(camera.position);
+key.target.position.set(0, 0, 0);
 camera.near = Math.max(size / 1000, 0.001);
 camera.far = distance * 100;
 camera.updateProjectionMatrix();

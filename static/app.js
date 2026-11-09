@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { applyProxyVisibility, initProxyStyling, styleProxies,
          updateProxyEdges } from './proxy_styling.js';
@@ -14,17 +14,34 @@ const dl = document.getElementById('download');
 const renderNote = document.getElementById('render');
 const refs = document.getElementById('refs');
 
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => fileInput.files.length &&
+  convert(Array.from(fileInput.files)));
+drop.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  drop.classList.add('over');
+});
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', (e) => {
+  e.preventDefault();
+  drop.classList.remove('over');
+  const files = Array.from(e.dataTransfer.files);
+  if (files.length) convert(files);
+});
+
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x151518);
 const camera = new THREE.PerspectiveCamera(55, 1, 0.01, 5000);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 const view = document.getElementById('view');
+let controls;
 
 function resize() {
   const w = view.clientWidth, h = view.clientHeight;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  if (controls) controls.handleResize();
 }
 window.addEventListener('resize', resize);
 view.appendChild(renderer.domElement);
@@ -33,13 +50,18 @@ resize();
 
 scene.add(new THREE.HemisphereLight(0xbfd0ff, 0x404040, 2.2));
 const key = new THREE.DirectionalLight(0xffffff, 2.0);
-key.position.set(3, 6, 4);
 scene.add(key);
+scene.add(key.target);
 scene.add(new THREE.GridHelper(50, 50, 0x444, 0x2a2a2a));
 
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
+controls = new TrackballControls(camera, renderer.domElement);
+controls.dynamicDampingFactor = 0.1;
 camera.position.set(4, 3, 6);
+
+function updateViewerLight() {
+  key.position.copy(camera.position);
+  key.target.position.copy(controls.target);
+}
 
 const loader = new GLTFLoader();
 initProxyStyling({ scene: scene, camera: camera });
@@ -92,15 +114,44 @@ function show(gltf, name) {
   dl.style.display = 'block';
 }
 
+async function loadArtifact(artifact) {
+  const response = await fetch(artifact.url);
+  if (!response.ok) throw new Error('Progressive artifact unavailable');
+  const bytes = await response.arrayBuffer();
+  await new Promise((resolve, reject) => {
+    loader.parse(bytes, '', (gltf) => {
+      if (!current) {
+        current = new THREE.Group();
+        scene.add(current);
+      }
+      current.add(gltf.scene || gltf.scenes[0]);
+      styleProxies(current);
+      applyDisplayStyleToModel(current);
+      if (!activeConversion.hasRenderedArtifact) {
+        activeConversion.hasRenderedArtifact = true;
+        fitAndCenter(current);
+      }
+      resolve();
+    }, reject);
+  });
+}
+
+async function loadNewArtifacts(state) {
+  const known = activeConversion.loadedArtifacts;
+  const pending = (state.artifacts || []).filter(
+    (artifact) => !known.has(artifact.id));
+  await Promise.all(pending.map(async (artifact) => {
+    await loadArtifact(artifact);
+    known.add(artifact.id);
+  }));
+}
+
 renderer.setAnimationLoop(() => {
   controls.update();
+  updateViewerLight();
   updateProxyEdges();
   renderer.render(scene, camera);
 });
-
-drop.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', () => fileInput.files.length &&
-  convert(Array.from(fileInput.files)));
 
 reindex.addEventListener('click', () => {
   reindex.disabled = true;
@@ -118,20 +169,13 @@ reindex.addEventListener('click', () => {
     .finally(() => { reindex.disabled = false; });
 });
 
-drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
-drop.addEventListener('dragleave', () => drop.classList.remove('over'));
-drop.addEventListener('drop', (e) => {
-  e.preventDefault();
-  drop.classList.remove('over');
-  const files = Array.from(e.dataTransfer.files);
-  if (files.length) convert(files);
-});
-
 function convert(files) {
   const file = files[0];
   const started = performance.now();
   let phaseStarted = started;
   activeConversion = { started: started, phaseStarted: phaseStarted };
+  activeConversion.loadedArtifacts = new Set();
+  activeConversion.hasRenderedArtifact = false;
   const setPhase = (label) => {
     phaseStarted = performance.now();
     activeConversion.phaseStarted = phaseStarted;
@@ -151,21 +195,24 @@ function convert(files) {
   progress.hidden = false;
   progress.value = 0;
   progress.max = 1;
+  progress.dataset.totalKnown = 'false';
   refs.textContent = 'Finding referenced components...';
   dl.style.display = 'none';
   if (url) URL.revokeObjectURL(url);
+  if (current) {
+    scene.remove(current);
+    current = null;
+  }
   const lookup = new FormData();
   for (const part of files) lookup.append('files', part);
-  fetch('/references', { method: 'POST', body: lookup })
+  const lookupPromise = fetch('/references', { method: 'POST', body: lookup })
     .then(async (res) => res.ok ? res.json() : null)
     .then(tree => { if (tree) renderReferences(tree); })
-    .catch(() => { refs.textContent = ''; })
-    .then(() => {
-      setPhase('Converting on server');
-      const form = new FormData();
-      for (const part of files) form.append('files', part);
-      return fetch('/convert', { method: 'POST', body: form });
-    })
+    .catch(() => { refs.textContent = ''; });
+  const form = new FormData();
+  for (const part of files) form.append('files', part);
+  setPhase('Converting on server');
+  fetch('/convert', { method: 'POST', body: form })
     .then(async (res) => {
       if (!res.ok) {
         let detail = res.statusText;
@@ -234,6 +281,7 @@ function convert(files) {
       );
     })
     .catch((err) => { finish(String(err.message || err)); });
+  void lookupPromise;
 }
 
 function formatDuration(milliseconds) {
@@ -258,26 +306,38 @@ function renderReferences(tree) {
   };
   add(tree, refs, 0);
   progress.max = Math.max(count, 1);
+  progress.dataset.totalKnown = 'true';
   return count;
 }
 
 function updateConversionProgress(state) {
+  const completed = Number(state.completed) || 0;
   const total = Number(progress.max) || 1;
-  progress.value = Math.min(state.completed || 0, total);
+  const totalKnown = progress.dataset.totalKnown === 'true';
+  if (totalKnown) {
+    progress.value = Math.min(completed, total);
+  } else if (completed > 1) {
+    progress.removeAttribute('value');
+  } else {
+    progress.value = completed;
+  }
   const current = state.current
     ? ' "' + state.current + '"' : '';
+  const completion = totalKnown
+    ? completed + '/' + total + ' complete'
+    : completed + ' processed';
   stats.textContent = 'Converting component' + current + ' — '
-    + (state.completed || 0) + '/' + total + ' complete'
+    + completion
     + ' — step ' + formatDuration(
       performance.now() - activeConversion.phaseStarted)
     + ', total ' + formatDuration(
       performance.now() - activeConversion.started);
-  const completed = new Set((state.completed_parts || [])
+  const completedParts = new Set((state.completed_parts || [])
     .map((part) => part.toLowerCase()));
   const missing = new Set((state.missing_parts || [])
     .map((part) => part.toLowerCase()));
   refs.querySelectorAll('.component').forEach((row) => {
-    row.classList.toggle('done', completed.has(row.dataset.partName));
+    row.classList.toggle('done', completedParts.has(row.dataset.partName));
     row.classList.toggle('missing', missing.has(row.dataset.partName));
     row.classList.toggle('active', row.dataset.partName
       === (state.current || '').toLowerCase());
@@ -291,6 +351,7 @@ async function waitForConversion(jobId) {
     const state = await response.json();
     state.job_id = jobId;
     updateConversionProgress(state);
+    await loadNewArtifacts(state);
     if (state.status === 'complete') progress.value = progress.max;
     if (state.status === 'complete' || state.status === 'failed') return state;
     await new Promise((resolve) => setTimeout(resolve, 400));

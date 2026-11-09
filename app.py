@@ -58,4 +58,12 @@ if __name__ == "__main__":
 
     if len(sys.argv) > 1:
         sys.exit(main(sys.argv))
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=8000,
+        timeout_graceful_shutdown=2,
+    )
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

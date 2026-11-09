@@ -30,6 +30,7 @@ from .suppression import is_suppressed_child, suppressed_child_names
 GENERIC_PART_REFERENCES = {
     "model_template_nx10.prt",
     "xxx_000x_100_model1.prt",
+    "xxx_000x_100_a_model1.prt",
 }
 
 

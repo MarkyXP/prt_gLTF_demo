@@ -23,6 +23,7 @@ from pathlib import Path
 import parasolid
 
 from .accounting import (
+    ArtifactCallback,
     ConversionContext,
     ProgressCallback,
     count_skip,
@@ -48,6 +49,7 @@ def convert_part_path(path: str | Path, seen: set[str] | None = None,
                       resolution: dict | None = None,
                       source_name: str | None = None,
                       progress: ProgressCallback | None = None,
+                      artifact: ArtifactCallback | None = None,
                       parallel_workers: int = 2,
                       parallel_depth: int = 0,
                       _context: ConversionContext | None = None) -> list[dict]:
@@ -84,6 +86,7 @@ def convert_part_path(path: str | Path, seen: set[str] | None = None,
         result = _convert_part_path(
             resolved_path, seen=seen, resolution=resolution,
             source_name=source_name, progress=progress,
+            artifact=artifact,
             parallel_workers=parallel_workers,
             parallel_depth=parallel_depth, context=context)
     except BaseException as error:
@@ -107,6 +110,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
                        resolution: dict | None,
                        source_name: str | None,
                        progress: ProgressCallback | None,
+                       artifact: ArtifactCallback | None,
                        parallel_workers: int,
                        parallel_depth: int,
                        context: ConversionContext) -> list[dict]:
@@ -118,7 +122,6 @@ def _convert_part_path(path: str | Path, seen: set[str],
     """
     path = Path(path)
     resolution = {"assemblies": []} if resolution is None else resolution
-    seen = set() if seen is None else seen
     stash = resolution.setdefault("stash", {})
     key = str(path).lower()
     if key in stash:
@@ -135,6 +138,12 @@ def _convert_part_path(path: str | Path, seen: set[str],
     ref_names = meaningful_part_references(data, logical_name)
     _report(progress, "started", logical_name)
     suppressed = suppressed_child_names(data)
+
+    def finish(result: list[dict]) -> list[dict]:
+        if artifact is not None and not ref_names and result:
+            artifact(str(path), logical_name, result)
+        _report(progress, "completed", logical_name)
+        return result
 
     primary = None
     parasolid_collection = []
@@ -180,13 +189,11 @@ def _convert_part_path(path: str | Path, seen: set[str],
         if (parasolid_collection
                 and not is_proxy_collection(parasolid_collection)):
             stash[key] = parasolid_collection
-            _report(progress, "completed", logical_name)
-            return parasolid_collection
+            return finish(parasolid_collection)
 
     if (not ref_names and direct_jt and not parasolid_collection):
         stash[key] = jt_collection
-        _report(progress, "completed", logical_name)
-        return jt_collection
+        return finish(jt_collection)
 
     if parasolid_collection and not is_proxy_collection(parasolid_collection):
         collection = parasolid_collection
@@ -199,12 +206,10 @@ def _convert_part_path(path: str | Path, seen: set[str],
     is_proxy = is_proxy_collection(collection)
     if not ref_names:
         if collection:
-            _report(progress, "completed", logical_name)
-            return collection
+            return finish(collection)
         if primary is not None:
             raise primary
-        _report(progress, "completed", logical_name)
-        return []
+        return finish([])
 
     referenced = []
     resolved_names = []
@@ -221,7 +226,8 @@ def _convert_part_path(path: str | Path, seen: set[str],
         try:
             child = convert_part_path(
                 reference, seen=set(seen), resolution=child_resolution,
-                progress=progress, parallel_workers=parallel_workers,
+                progress=progress, artifact=artifact,
+                parallel_workers=parallel_workers,
                 parallel_depth=parallel_depth + 1, _context=context)
         except RuntimeError:
             child = []
@@ -321,8 +327,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
             "proxy_display": "placed-instances",
             "pairing": pair_notes,
         })
-        _report(progress, "completed", logical_name)
-        return bundle
+        return finish(bundle)
 
     incomplete = bool(missing_names or nested_missing)
     if defer_parasolid and (incomplete or not referenced):
@@ -346,8 +351,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
                 "skipped_hidden": skipped_hidden,
                 "proxy_display": proxy_display,
             })
-            _report(progress, "completed", logical_name)
-            return referenced
+            return finish(referenced)
         mark_proxy(collection, "placeholder")
         resolution["assemblies"].append({
             "part": logical_name,
@@ -358,8 +362,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
             "skipped_hidden": skipped_hidden,
             "proxy_display": "placeholder",
         })
-        _report(progress, "completed", logical_name)
-        return collection
+        return finish(collection)
 
     resolution["assemblies"].append({
         "part": logical_name,
@@ -372,11 +375,9 @@ def _convert_part_path(path: str | Path, seen: set[str],
         "pairing": pair_notes,
     })
     if referenced:
-        _report(progress, "completed", logical_name)
-        return referenced
+        return finish(referenced)
     if primary is not None:
         raise RuntimeError("%s; referenced local parts had no usable "
                            "geometry: %s"
                            % (primary, ", ".join(missing_names or ref_names)))
-    _report(progress, "completed", logical_name)
-    return collection
+    return finish(collection)
