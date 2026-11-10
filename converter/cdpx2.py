@@ -10,6 +10,7 @@ Grounded in the vendor CAD-importer library decompiles (addresses
 0x18005b660 vec<int> Parse and 0x18005b4a0 ProbContext2 parse) plus the
 ArithmeticCodec2 descriptions; jt106_txt.txt is the working extraction.
 Python 3.10+/stdlib only; emu4 provides the vendor v9 bitlength decode.
+Int32CDP2 codec-1 packets use BitLengthCodec2's fixed/run-width framing.
 
 Integrity guards (hang/diagnostic): a garbled bit-count packet or CDP
 count raises a diagnosis instead of attempting multi-MB unpacks; the
@@ -19,6 +20,7 @@ offsets).
 """
 import struct
 import emu4
+from bitlength2 import decode_bitlength2
 
 U32M = 0xFFFFFFFF
 
@@ -124,11 +126,14 @@ class WordBits:
 
     def bit(self):
         """Yield the next MSB-first code-text bit, refilling words on demand."""
+        if self.nbits <= 0:
+            return 0
         if self.nb == 0:
             self.nextword()
         b = self.buf >> 31
         self.buf = (self.buf << 1) & U32M
         self.nb -= 1
+        self.nbits -= 1
         return b
 
 
@@ -141,6 +146,7 @@ class ArthDec:
         self.buffer = self.wb.buf
         self.wb.buf = (self.wb.buf << 16) & U32M
         self.wb.nb -= 16
+        self.wb.nbits -= 16
         self.low = 0
         self.high = 0xFFFF
         self.code = self.buffer >> 16
@@ -253,7 +259,7 @@ def parse_cdp(d, pos, name='', depth=0):
             % (name or '?', cnt, pos, len(d) - pos))
     codec = d[pos]
     pos += 1
-    t = codec if codec != 1 else 6
+    t = codec
     if t == 4:
         chop = d[pos]
         pos += 1
@@ -278,6 +284,9 @@ def parse_cdp(d, pos, name='', depth=0):
         return list(words), pos
     if t in (2, 5):
         raise ValueError('codec %d not implemented (%s) @%x' % (codec, name, pos))
+    if t == 1:
+        vals = decode_bitlength2(cnt, words, ct)
+        return list(vals), pos
     if t == 6:
         vals = emu4.decode_v9_bitlength(cnt, words, ct)
         return list(vals), pos
@@ -299,6 +308,13 @@ def self_check():
     """
     empty, end_pos = parse_cdp(b'\x00\x00\x00\x00', 0)
     assert empty == [] and end_pos == 4, (empty, end_pos)
+    assert decode_bitlength2(1, [0x020D0000], 16) == [0]
+    fixed_packet = struct.pack('<iBiI', 1, 1, 16, 0x020D0000)
+    assert parse_cdp(fixed_packet, 0) == ([0], len(fixed_packet))
+    variable_packet = struct.pack(
+        '<iBiII', 1, 1, 45, 0x80000000, 0x34580000
+    )
+    assert parse_cdp(variable_packet, 0) == ([-1], len(variable_packet))
     null_cdp = (struct.pack('<i', 1) + b'\x00' + struct.pack('<i', 32) +
                 struct.pack('<I', 305419896))
     values, end_pos = parse_cdp(null_cdp, 0)
