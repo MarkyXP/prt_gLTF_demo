@@ -1,5 +1,35 @@
 # AGENTS.md
 
+## Repository structure
+
+- `app.py` — thin entrypoint; loads logging/config and dispatches to web or CLI.
+- `application/` — application services layer: config, CLI, reference lookup,
+  part-tree conversion, serialization, HTTP endpoints. Drives `converter/`
+  through flat module names put on `sys.path` by `config.py`.
+  - `application/resolver/` — recursive part-tree conversion, display/colour
+    painting, and skip statistics.
+  - `application/reference_index/` — startup filename index over configured
+    reference roots with exact-name lookup.
+- `converter/` — pure-stdlib decode layer: `.prt` container readers, embedded
+  JT/Parasolid handling, colour/suppress records, and optional OCCT glue.
+  - `converter/jt/` — embedded-JT container dispatch, segment parsing, mesh
+    extraction, and glTF writing.
+  - `converter/meshcodec/` — faithful Annex-D MeshCodec/MeshDecoder
+    transcription for JT mesh topology.
+  - `converter/pairing/` — assembly instance pairing (frames, occurrence
+    tokens, family bucketing, child join); `assembly_pairing.py` is its facade.
+  - `converter/schema/` — schema files for the optional Parasolid toolchain.
+- `static/` — browser viewer assets served by `application/web.py`:
+  `index.html`, `styles.css`, `app.js` (three.js scene, drag-drop, polling),
+  plus diagnostic GLBs and `favicon.svg`.
+- `baseline/` — reference `.glb` outputs used for regression comparison.
+- `scratch/`, `temp/` — ad-hoc probes, diagnostic scripts, and generated
+  artifacts; not part of the shipped application.
+- `README.md` — user-facing usage, endpoints, converter internals, limitations.
+- `TODO.md`, `requirements.txt`, `.env` — outstanding work, dependencies, and
+  local reference-root configuration.
+- Each package folder has its own `README.md` describing its modules.
+
 ## Running Python
 
 - Use `uv run` to launch Python scripts, not `py` or `python` directly.

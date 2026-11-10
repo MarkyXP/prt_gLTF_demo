@@ -39,6 +39,12 @@ I want this folder to contain a Python / FastAPI app which can demo the .prt to 
   eccentric bearing here). The stronger byte-level join (parent connector id
   found inside the child payload) worked for only one of the four families
   and needs the OM object-table decode to generalize.
+- Newer layouts write a per-frame child-name block right after each placement
+  frame; `converter/pairing/tokens.py` now decodes it and the family join
+  prefers the unique matching child. This removes the extra eccentric-bearing
+  instance at the origin in
+  `21_2630_110_b_hare_bearing_block_assembly.pdf_MODEL.prt`; b01 output stays
+  byte-identical because it has no per-frame name blocks.
 ## Display state work (session 2026-11-06, private reverse-engineering corpus)
 
 ### 1a. Hidden edges in the rendered output (DONE)
@@ -159,10 +165,11 @@ Decode-work progress toward items 1/2/3 (facts verified on the corpus):
 - **Family->name join**: the name rows sit ~0x5600 bytes from the
   placement frames; each side carries `0x81/0x82`-prefixed compact ids in
   a shared 12-bit id space (e.g. 550/553 in name rows, 550/553/545/337 in
-  frame rows). A direct id-graph join between the two regions is the last
-  step for a deterministic family->child binding; the adjacency-based
-  attempt was removed after verification showed it cannot work, so the
-  geometric pairing fallback remains the shipped behaviour.
+  frame rows). Newer layouts sidestep the id graph: each placement frame is
+  followed by a CONFG-style child-name block (`03 <len+2> <NAME> 00 03
+  <ulen+2> <uuid> 00 05`), now decoded by `converter/pairing/tokens.py`.
+  The direct id-graph join is therefore only needed for older layouts such
+  as b01; the geometric pairing fallback remains their shipped behaviour.
 - Verified no regression: b01 GLB output byte-identical to the
   pre-change pipeline after the rollback of the adjacency attempt.
 

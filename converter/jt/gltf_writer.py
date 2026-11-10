@@ -82,8 +82,9 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
         today = len(instances)
         if instances:
             node_name = instances[0].get('name') or node_name
-        nodes.append({'name': node_name,
-                      'mesh': len(meshes_out)})
+        else:
+            nodes.append({'name': node_name,
+                          'mesh': len(meshes_out)})
         extras = {'sourceStream': m.get('stream')}
         if proxy_role:
             extras['proxyRole'] = proxy_role

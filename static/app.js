@@ -58,8 +58,20 @@ controls = new TrackballControls(camera, renderer.domElement);
 controls.dynamicDampingFactor = 0.1;
 camera.position.set(4, 3, 6);
 
+const lightDirection = new THREE.Vector3();
+const lightRight = new THREE.Vector3();
+const lightUp = new THREE.Vector3();
+
 function updateViewerLight() {
-  key.position.copy(camera.position);
+  camera.updateMatrixWorld();
+  const distance = camera.position.distanceTo(controls.target);
+  lightDirection.copy(camera.position).sub(controls.target).normalize();
+  lightRight.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+  lightUp.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+  key.position.copy(controls.target)
+    .addScaledVector(lightDirection, distance / Math.sqrt(2))
+    .addScaledVector(lightRight, -distance / 2)
+    .addScaledVector(lightUp, distance / 2);
   key.target.position.copy(controls.target);
 }
 

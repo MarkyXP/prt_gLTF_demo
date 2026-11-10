@@ -1,6 +1,6 @@
-"""Object-index and occurrence tokens next to a placement frame.
+"""Object-index, occurrence, and child-name tokens next to a placement frame.
 
-Two byte facts are decoded here:
+Three byte facts are decoded here:
 
 * trailing ``f0``/``f1`` object-index tokens (the reference-index token
   family: ``f0 value`` one byte, ``f1 high lo`` a two-byte word when high
@@ -8,7 +8,10 @@ Two byte facts are decoded here:
 * the per-frame ``e0 <id...>`` occurrence token: every component
   occurrence stores a variable-width connector id directly after (or, for
   the base component, immediately before) its frame.  The id width is a
-  fixed ``CONNECTOR_WIDTH`` window in the shipped writer family.
+  fixed ``CONNECTOR_WIDTH`` window in the shipped writer family;
+* the per-frame CONFG-style child-name block ``03 <len+2> <NAME> 00 03
+  <ulen+2> <uuid> 00 05`` written by newer layouts.  Older layouts write
+  only the ``e0`` connector and return ``None`` here.
 
 Pure stdlib; no third-party dependency.
 """
@@ -18,6 +21,8 @@ from .frames import FRAME_PREFIX_SCAN, FRAME_SUFFIX_SCAN
 
 CONNECTOR_WIDTH = 6
 CONNECTOR_PREFIX = 4
+CHILD_NAME_SCAN = 128
+CHILD_NAME_MAX = 120
 
 
 def _reference_index(data, offset, length):
@@ -89,6 +94,66 @@ def _scan_connector(window, from_before=False):
         candidate = _connector_at(window, offset, len(window))
         if candidate:
             return candidate
+    return None
+
+
+def _child_name_record(data, position, length):
+    """Decode one ``03 <len+2> <NAME> 00 03 <ulen+2> <uuid> 00 05`` block."""
+    if position + 4 > length or data[position] != 0x03:
+        return None
+    name_length = data[position + 1] - 2
+    if name_length < 2 or name_length > CHILD_NAME_MAX:
+        return None
+    name_start = position + 2
+    name_end = name_start + name_length
+    if name_end + 2 > length:
+        return None
+    name = data[name_start:name_end]
+    if data[name_end:name_end + 2] != b"\x00\x03":
+        return None
+    if any(byte < 0x20 or byte > 0x7E for byte in name):
+        return None
+    uuid_length = data[name_end + 2] - 2
+    uuid_start = name_end + 3
+    uuid_end = uuid_start + uuid_length
+    if uuid_length != 36 or uuid_end + 2 > length:
+        return None
+    uuid = data[uuid_start:uuid_end]
+    if data[uuid_end:uuid_end + 2] != b"\x00\x05":
+        return None
+    if any(chr(byte) not in "0123456789abcdefABCDEF-" for byte in uuid):
+        return None
+    return name.decode("ascii")
+
+
+def frame_child_name(data, frame, limit=None):
+    """Per-occurrence child part name written after a placement frame.
+
+    Newer writers put a CONFG-style name block immediately after the frame;
+    older writers put the ``e0 <connector>`` token there instead, so this
+    returns ``None`` for them.  ``limit`` bounds the scan (normally the next
+    frame offset) so a name block belonging to a later occurrence is never
+    borrowed.
+
+    > example
+    >>> frame = {"end": 0}
+    >>> payload = (b"\\x03\\x09CHILD_A\\x00\\x03\\x26"
+    ...            + b"45923f8e-86ef-4e50-a375-2956b9d49d47"
+    ...            + b"\\x00\\x05")
+    >>> frame_child_name(payload, frame)
+    'CHILD_A'
+    """
+    scan_end = frame["end"] + CHILD_NAME_SCAN
+    if limit is not None:
+        scan_end = min(scan_end, limit)
+    scan_end = min(scan_end, len(data))
+    position = frame["end"]
+    while position + 4 <= scan_end:
+        if data[position] == 0x03:
+            decoded = _child_name_record(data, position, len(data))
+            if decoded is not None:
+                return decoded
+        position += 1
     return None
 
 

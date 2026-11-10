@@ -99,6 +99,36 @@ def _child_fits_family(family, extent):
     return True
 
 
+def _family_name_matches_child(family_key, stem):
+    """Whether a stored occurrence name identifies one child prototype.
+
+    Some NX occurrence labels omit the numeric suffix added to the saved
+    child filename (for example, ``bearing`` vs ``bearing128.prt``).
+
+    > example
+    >>> _family_name_matches_child(
+    ...     ("name", "LBS000317_CONCENTRIC_BEARING"),
+    ...     "LBS000317_concentric_bearing128.prt")
+    True
+    >>> _family_name_matches_child(("name", "part"), r"C:\\parts\\part12.prt")
+    True
+    >>> _family_name_matches_child(("conn", b"abcd"), "bearing.prt")
+    False
+    """
+    if not isinstance(family_key, tuple) or len(family_key) != 2:
+        return False
+    kind, label = family_key
+    if kind != "name" or not isinstance(label, str):
+        return False
+    child = str(stem).replace("\\", "/").rsplit("/", 1)[-1]
+    if child.casefold().endswith(".prt"):
+        child = child[:-4]
+    label = label.casefold()
+    child = child.casefold()
+    suffix = child[len(label):] if child.startswith(label) else None
+    return suffix == "" or bool(suffix and suffix.isdigit())
+
+
 def pair_instances(families, child_extents):
     """Bind each component-master family onto one resolved child file.
 
@@ -107,10 +137,12 @@ def pair_instances(families, child_extents):
                        extent ``(dx, dy, dz)`` in the part's payload units
                        (millimetres here), from the child's own meshes.
 
-    Deterministic, name-free join:
-      1. every family loses the children its packing can't host
+    Name-backed families first bind to a unique matching child filename,
+    allowing the numeric suffix commonly added to saved prototype names.
+    Remaining families use a deterministic geometric join:
+      1. every family loses children its packing can't host
          (``_child_fits_family`` / ``_intra_family_feasible`` only),
-      2. when the surviving candidates still overlap, the families pair
+      2. when surviving candidates still overlap, families pair
          deterministically by instance-count descending, ties by the raw
          family key; within a family the candidate children order by
          ``(stem length, stem)`` — the component roster order the survivor
@@ -133,6 +165,12 @@ def pair_instances(families, child_extents):
     ...     [("child_a", (10.0, 10.0, 10.0))])
     >>> assignments
     {('conn', b'ab00'): 'child_a'}
+    >>> assignments, _ = pair_instances(
+    ...     [(('name', 'child'), [frame])],
+    ...     [('other.prt', (10.0, 10.0, 10.0)),
+    ...      ('child2.prt', (10.0, 10.0, 10.0))])
+    >>> assignments
+    {('name', 'child'): 'child2.prt'}
     """
     if not families or not child_extents:
         return {}, ["no families or no resolved children"]
@@ -154,10 +192,20 @@ def pair_instances(families, child_extents):
             notes.append("%s: no feasible child" % (key,))
 
     assignments = {}
+    for key, group in families:
+        candidates = [stem for stem in stems
+                      if stem in feasible_by_family[key]
+                      and _family_name_matches_child(key, stem)]
+        if len(candidates) == 1 and candidates[0] not in assignments.values():
+            assignments[key] = candidates[0]
+            notes.append("%s (%d instances) name -> %s"
+                         % (key, len(group), candidates[0]))
+
     counts = {key: len(group) for key, group in families}
-    ordered_keys = sorted(feasible_by_family,
+    ordered_keys = sorted((key for key in feasible_by_family
+                           if key not in assignments),
                           key=lambda key: (-counts[key], key))
-    remaining = list(stems)
+    remaining = [stem for stem in stems if stem not in assignments.values()]
     for key in ordered_keys:
         allowed = [stem for stem in feasible_by_family[key]
                    if stem in remaining]
