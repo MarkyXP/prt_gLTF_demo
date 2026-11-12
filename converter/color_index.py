@@ -102,6 +102,29 @@ def find_ug_part(part_path):
     return None
 
 
+def body_palette_records(part_path):
+    """[(palette index, rgb triple)] of every body colour record, in file order.
+
+    Assembly writers cache one display JT piece per component and one body
+    colour record per displayed component body, both in the same order, so
+    callers can paint multi-piece fallback geometry per piece. Returns
+    [] when no colour is set or the palette table is absent.
+
+    > example
+    > body_palette_records("loom.prt")
+    >   -> [(135, (0.27, 0.38, 0.51)), (15, None), ...]
+    """
+    payload = find_ug_part(part_path)
+    if payload is None:
+        return []
+    from converter.palette import palette_table
+    table = palette_table(payload)
+    return [
+        (site.token, table.get(site.token))
+        for site in colour_sites(payload) if site.kind == "body"
+    ]
+
+
 def body_palette_index_rgb(part_path):
     """(nx palette index, rgb triple) of the part's own prototype body.
 

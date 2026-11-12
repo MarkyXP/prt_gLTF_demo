@@ -20,8 +20,10 @@ def extract_meshes(x):
 
     Accepts SPLM containers, OLE2/CFBF containers (incl. nested OLE JT
     streams) and raw JT pieces. Returns list of dicts; each has 'pts'/'tris'
-    when the LOD0 element decoded. Only the first (primary display) JT
-    piece per stream is decoded.
+    when the LOD0 element decoded. Every JT piece in the stream is decoded:
+    assembly writers cache one display piece per component (loom/cable
+    parts carry the wire and terminals as later pieces), and piece
+    coordinates are already baked in assembly space.
 
     > example
     > extract_meshes(open('part.prt', 'rb').read()) ->
@@ -52,7 +54,7 @@ def extract_meshes(x):
         bases = jt_piece_bases(data)
         if not bases:
             continue
-        for pi, base in enumerate(bases[:1]):
+        for pi, base in enumerate(bases):
             try:
                 jt = parse_jt(data[base:] if base else data)
             except ValueError as ex:

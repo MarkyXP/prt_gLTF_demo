@@ -53,7 +53,7 @@ Verified against an NX writer ("Version 9.4 JT  DM 10.0.2.1"):
 | `gltf_writer.py` | `write_gltf`, `_only_buffer_views`, `_gltf_json_ok` |
 | `cli.py` | `_main` |
 
-Only the first (primary display) JT piece per stream and the
-highest-detail LOD segment are exported; later pieces are
-assembly/alternate-display children requiring scene-graph transforms the
-decoder does not currently apply.
+Every JT piece in the stream and the highest-detail LOD segment are
+exported. Assembly writers cache one display piece per component in
+assembly coordinates, so later pieces are needed for cable/loom parts
+whose components cannot be resolved from disk.

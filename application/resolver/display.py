@@ -31,16 +31,36 @@ def paint_body_display(path: str, collection: list[dict]) -> tuple[list[dict], i
       display records decode
     """
     try:
-        from color_index import body_palette_index_rgb, body_translucency
+        from color_index import body_palette_records, body_translucency
         percent = body_translucency(str(path)) or 0
-        colour = body_palette_index_rgb(str(path))[1]
         if percent is None:
             percent = 0
-        if colour and isinstance(colour, tuple) and len(colour) >= 3:
-            rgb = list(colour[:3])
-            for entry in collection:
-                if entry.get("color") in (None, [0.8, 0.8, 0.8]):
-                    entry["color"] = rgb
+        records = [
+            (index, list(rgb[:3]))
+            if rgb and isinstance(rgb, (tuple, list)) and len(rgb) >= 3
+            and all(isinstance(v, (int, float)) and 0.0 <= v <= 1.0
+                    for v in rgb[:3])
+            else (index, None)
+            for index, rgb in body_palette_records(str(path))
+        ]
+        # Assembly fallback pieces (one display JT piece per component) pair
+        # with the body colour records in the same file order, so each piece
+        # takes its own record and pieces without one stay at their default;
+        # a single record answers for every mesh as before.
+        if len(records) > 1:
+            per_entry = records
+        elif records:
+            per_entry = None
+        else:
+            per_entry = []
+        for position, entry in enumerate(collection):
+            rgb = (
+                per_entry[position][1]
+                if per_entry and position < len(per_entry)
+                else records[0][1] if per_entry is None else None
+            )
+            if rgb and entry.get("color") in (None, [0.8, 0.8, 0.8]):
+                entry["color"] = list(rgb)
         if percent >= 100:
             return [], len(collection)
         if percent:
