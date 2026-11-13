@@ -139,8 +139,18 @@ def _convert_part_path(path: str | Path, seen: set[str],
     _report(progress, "started", logical_name)
     suppressed = suppressed_child_names(data)
 
-    def finish(result: list[dict]) -> list[dict]:
-        if artifact is not None and not ref_names and result:
+    def finish(result: list[dict], includes_children: bool = False) -> list[dict]:
+        """Complete one part, streaming artifacts for its own geometry.
+
+        Combined results that bundle already-streamed children skip the
+        artifact so each part's geometry is uploaded to the viewer exactly
+        once, as soon as it is ready.
+
+        > example
+        > finish(collection) -> collection; emits an artifact because the
+        > result holds this part's own geometry, not resolved children
+        """
+        if artifact is not None and result and not includes_children:
             artifact(str(path), logical_name, result)
         _report(progress, "completed", logical_name)
         return result
@@ -327,7 +337,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
             "proxy_display": "placed-instances",
             "pairing": pair_notes,
         })
-        return finish(bundle)
+        return finish(bundle, includes_children=True)
 
     incomplete = bool(missing_names or nested_missing)
     if defer_parasolid and (incomplete or not referenced):
@@ -351,7 +361,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
                 "skipped_hidden": skipped_hidden,
                 "proxy_display": proxy_display,
             })
-            return finish(referenced)
+            return finish(referenced, includes_children=True)
         mark_proxy(collection, "placeholder")
         resolution["assemblies"].append({
             "part": logical_name,
@@ -375,7 +385,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
         "pairing": pair_notes,
     })
     if referenced:
-        return finish(referenced)
+        return finish(referenced, includes_children=True)
     if primary is not None:
         raise RuntimeError("%s; referenced local parts had no usable "
                            "geometry: %s"
