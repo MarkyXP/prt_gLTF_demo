@@ -37,7 +37,8 @@ Verified against an NX writer ("Version 9.4 JT  DM 10.0.2.1"):
 * Multi-piece preamble: u32[1] = piece count; when > 1 the preamble
   carries `(u32[1]-1)` pairs `{u64 X, u64 pieceOffset}` (u32[5] =
   preamble byte length, `28 + 16*(pieces-1)`); each extra piece begins
-  directly with its own `Version ...` header.
+  directly with its own `Version ...` header. The first header is located
+  using that length, including when a large piece table exceeds 256 bytes.
 * Separator/hex notation such as `47 01 04 01`, `ff ff`, `e0 <tok> f0`
   are part-format byte patterns.
 
@@ -48,12 +49,15 @@ Verified against an NX writer ("Version 9.4 JT  DM 10.0.2.1"):
 | `container.py` | `Stream`, `open_prt`, `parse_splm`, `iter_jt_streams`, `jt_piece_bases`, `_ole_flat`, `_is_jt_candidate` |
 | `frames.py` | `JT_HEADER`, `TocEntry`, `_guid`, `_find_version_base`, `parse_jt`, `_guess_stride`, `JtFile`, `decompress_lehc`, `lzma_decompress`, `inflate_zlib_segments` |
 | `attributes.py` | `_find_rgba_alignment`, `parse_material_payload`, `read_lsg_attrs`, `split_lsg_elements`, `split_shape_element` |
+| `scene.py` | Selects version 9 range-LOD scene graph branches and their shape segments |
 | `trimesh.py` | `_expand_cdp`, `corner_normal_ids`, `decode_trimesh`, `_decode_piece` (imports cdpx2/runmesh2/meshdec2) |
 | `extractor.py` | `extract_meshes` |
 | `gltf_writer.py` | `write_gltf`, `_only_buffer_views`, `_gltf_json_ok` |
 | `cli.py` | `_main` |
 
-Every JT piece in the stream and the highest-detail LOD segment are
-exported. Assembly writers cache one display piece per component in
-assembly coordinates, so later pieces are needed for cable/loom parts
-whose components cannot be resolved from disk.
+Every JT piece in the stream is exported. For supported version 9 range-LOD
+scene graphs, the nearest alternative is selected through the LSG property
+table, including all shapes in its group. Other graphs retain the existing
+segment-type fallback. Assembly writers cache one display piece per component
+in assembly coordinates, so later pieces are needed for cable/loom parts whose
+components cannot be resolved from disk.

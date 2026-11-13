@@ -49,12 +49,23 @@ def _find_version_base(data):
     Verified writers:
       - bare stream: Version string at 0.
       - SPLM FastLoad/JT embedded: u32 OM preamble then Version; the preamble
-        length is u32[5] (28 B screw/assembly, 44 B when u32[1]=2, 60 B when
-        u32[1]=3; the extension after u32[6] is (u32[1]-1) x {u64 ?, u64
-        piece-offset} pairs pointing at additional inner JT pieces).
+        length is u32[5], followed by a table of piece offsets.
+
+    > example
+    > _find_version_base(b'Version' + b' ' * 73) -> 0
     """
     if data[:7] == b'Version':
         return 0
+    if len(data) >= 28:
+        count = struct.unpack_from('<I', data, 4)[0]
+        preamble_length = struct.unpack_from('<I', data, 20)[0]
+        if (count >= 1 and preamble_length == 28 + 16 * (count - 1)
+                and preamble_length + 105 <= len(data)
+                and data[preamble_length:preamble_length + 7] == b'Version'):
+            q = preamble_length
+            toc_off = struct.unpack_from('<I', data, q + 85)[0]
+            if data[q + 80] in (0, 1) and 0 < toc_off < len(data) - q:
+                return q
     q = data.find(b'Version', 0, 0x100)
     if q <= 0 or q + 105 > len(data):
         return -1

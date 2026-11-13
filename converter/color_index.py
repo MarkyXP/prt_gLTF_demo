@@ -35,6 +35,7 @@ CLI:
 from __future__ import annotations
 
 from collections import namedtuple
+import struct
 
 import prt_jt  # noqa: E402
 
@@ -105,10 +106,8 @@ def find_ug_part(part_path):
 def body_palette_records(part_path):
     """[(palette index, rgb triple)] of every body colour record, in file order.
 
-    Assembly writers cache one display JT piece per component and one body
-    colour record per displayed component body, both in the same order, so
-    callers can paint multi-piece fallback geometry per piece. Returns
-    [] when no colour is set or the palette table is absent.
+    Record order need not match the order of embedded JT pieces. Returns
+    [] when no body colour records are found.
 
     > example
     > body_palette_records("loom.prt")
@@ -123,6 +122,38 @@ def body_palette_records(part_path):
         (site.token, table.get(site.token))
         for site in colour_sites(payload) if site.kind == "body"
     ]
+
+
+def body_palette_bounds_records(part_path):
+    """Return palette records with candidate body bounds, when encoded as six doubles.
+
+    > example
+    > body_palette_bounds_records("loom.prt")
+    > -> [(index, rgb, (xmin, ymin, zmin, xmax, ymax, zmax) or None), ...]
+    """
+    payload = find_ug_part(part_path)
+    if payload is None:
+        return []
+    from converter.palette import palette_table
+    table = palette_table(payload)
+    records = []
+    for site in colour_sites(payload):
+        if site.kind != "body":
+            continue
+        start = site.offset - 56
+        bounds = None
+        if start >= 0 and payload[start:start + 4] == b"\xf0\x01\x01\x07":
+            atoms = payload[start + 4:site.offset - 4]
+            if len(atoms) == 48 and all(
+                    0x20 <= atoms[i] <= 0x3f or 0xa0 <= atoms[i] <= 0xbf
+                    for i in range(0, 48, 8)):
+                bounds = tuple(
+                    struct.unpack(">d", bytes([(atoms[i] + 0x10) & 0xff])
+                                  + atoms[i + 1:i + 8])[0] / 4
+                    for i in range(0, 48, 8)
+                )
+        records.append((site.token, table.get(site.token), bounds))
+    return records
 
 
 def body_palette_index_rgb(part_path):

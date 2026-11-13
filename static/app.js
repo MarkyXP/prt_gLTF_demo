@@ -138,6 +138,7 @@ async function loadArtifact(artifact) {
       }
       current.add(gltf.scene || gltf.scenes[0]);
       styleProxies(current);
+      applyProxyVisibility();
       applyDisplayStyleToModel(current);
       if (!activeConversion.hasRenderedArtifact) {
         activeConversion.hasRenderedArtifact = true;

@@ -29,6 +29,7 @@ def mesh_collection(data: bytes) -> list[dict]:
         for triangle_mesh in mesh["meshes"]:
             collection.append({
                 "stream": mesh["stream"],
+                "jtPiece": mesh["piece"],
                 "t": triangle_mesh,
                 "color": triangle_mesh.get("color"),
             })

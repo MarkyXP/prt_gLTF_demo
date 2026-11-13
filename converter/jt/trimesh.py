@@ -25,6 +25,7 @@ import meshdec2 as _md2         # noqa: E402
 from .attributes import read_lsg_attrs, split_shape_element
 from .diagnostics import log_mesh_diagnostics
 from .frames import inflate_zlib_segments
+from .scene import selected_shape_segments
 
 def _expand_cdp(vals, mask):
     """Cumulative 4-primer expansion (coordfix2-verified, bit-exact)."""
@@ -269,7 +270,15 @@ def _decode_piece(name, pi, base, jt):
          'summary': jt.summary(), 'warnings': list(jt.warnings), 'meshes': []}
     inflate_cache = inflate_zlib_segments(jt)
     lod_segments = [seg for seg in jt.segments if seg.type in (6, 7, 8, 9)]
-    if lod_segments:
+    selected = None
+    if jt.header.version.startswith("Version 9."):
+        lsg = next((inflate_cache[index] for index, seg in enumerate(jt.segments)
+                    if seg.type == 1 and index in inflate_cache), None)
+        if lsg is not None:
+            selected = selected_shape_segments(lsg, [seg.guid for seg in lod_segments])
+    if selected is not None:
+        lod_segments = [seg for seg in lod_segments if seg.guid in selected]
+    elif lod_segments:
         best_lod = min(seg.type for seg in lod_segments)
         lod_segments = [seg for seg in lod_segments if seg.type == best_lod]
     available_lods = sorted({seg.type for seg in jt.segments

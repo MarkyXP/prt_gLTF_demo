@@ -9,6 +9,11 @@ writer consumes, plus assembly-proxy policy and web/CLI resolution reports.
 | `display.py` | Body colour painting from the display records; fully transparent bodies (translucency 100) are dropped before they reach the collection. |
 | `accounting.py` | Shared conversion context: cache, in-flight futures, and the skip statistics (`skipped_hidden`, `dropped_translucent`). |
 
+For multi-body JT geometry, encoded body bounds are matched to JT piece bounds
+when each match is close, unique and unambiguous. Unmatched pieces retain their
+JT colours. If bounds are unavailable, display painting falls back to record
+order and logs a warning; record order may not identify the right body.
+
 Hidden-component policy:
 
 * A component occurrence suppressed in the parent's CONFG-layer display records

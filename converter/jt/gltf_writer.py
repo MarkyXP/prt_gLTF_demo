@@ -52,7 +52,8 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
             render_pts = pts
             render_normals = None
             render_tris = tris
-        assert len(bufs) % 4 == 0
+        while len(bufs) % 4:
+            bufs += b'\x00'
         prim = {'attributes': {}}
         pos0 = len(bufs)
         prim['_pos0'] = pos0
@@ -157,7 +158,9 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
             mat_index[key] = len(materials)
             material = {'name': 'mat-%d' % len(materials),
                         'pbrMetallicRoughness': {
-                            'baseColorFactor': [float(x) for x in key]}}
+                            'baseColorFactor': [float(x) for x in key],
+                            'metallicFactor': 0.1,
+                            'roughnessFactor': 0.6}}
             if key[3] < 1.0:
                 material['alphaMode'] = 'BLEND'
                 material['doubleSided'] = True
