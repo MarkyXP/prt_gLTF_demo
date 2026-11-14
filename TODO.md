@@ -24,6 +24,53 @@ I want this folder to contain a Python / FastAPI app which can demo the .prt to 
 - We should also mention why AI was used - as far as I know .prt files have been described as proprietary blobs which could not be 
 
 # Status updates
+## TopoMesh decode fixes: detailed body pieces now decode (session 2026-11-14)
+
+Symptom: e.g. `55_0222_100_k_fascia.prt` rendered only fragment meshes, with a
+stray oversized sheet and displaced waffle-like grids floating beside the part;
+the two big detailed LOD0 pieces (the front sheet with the windows and the back
+rib structure) failed with `face degree array exhausted ... corrupt framing`
+and were silently dropped by `_decode_piece`.
+
+Root causes, all in the Annex-D machine transcription (validated against the
+public JT v9.5 spec Appendix E and cross-checked bit-exact against the jcadlib
+Java reference `MeshDecoder`, which decodes the same symbol arrays to identical
+triangles):
+
+1. `converter/cdpx2.py::lag1` accumulated past 32 bits, so split-face offsets
+   that wrap (Java int semantics) came out >2^32 and the walk misindexed the
+   active list. Fixed by masking each step to 32 bits.
+2. `converter/meshcodec/machine_walk.py::completeV` inverted the CCW sweep's
+   `jn` ring step (`inc_mod` instead of the spec's `DecModN`); on complex
+   meshes this desyncs face-degree context assignment and starves the walk.
+   The spec walk is unconditional: CCW = DecModN for both ring counters,
+   CW = IncModN. The `K_V` knob and a dead `walk0` closure are gone.
+3. `converter/meshcodec/decoder.py::ioFace` truncated context-7 attribute
+   masks to 32 bits (they are 64-bit: 30 LSBs + next 30 + top 4, split across
+   the `am7`/`amM`/`extra` streams — reassembled in `trimesh.py::decode_trimesh`
+   before the machine), counted the mask into `cFaceAttrs` twice on the
+   high-degree path, and read `amM` (the mask-8 mid stream) as the
+   high-degree LRG stream instead of `hiDeg`.
+
+Result: fascia-family parts decode 30/30 pieces (51,232 + 24,274 triangles of
+precise Parasolid-face geometry per part, all symbol streams consumed exactly
+per the spec's completion assertions); b01 output is byte-identical to the
+pre-change pipeline (A/B verified via git stash).
+
+Display-selection follow-up (session 2026-11-14): NX's screenshot shows the
+oversized sheet and the translated grids are not part of the displayed body.
+The six 924-point grids are flat cache sheets at offsets
+(-190/-380 mm, -40 mm); piece 6 is the one aligned to the body. Piece 0 is an
+18-point coarse sheet that blankets and exceeds the detailed body bounds.
+Piece 7 is the 260-point full-body mesh whose back side contains the rib grid;
+pieces 28/29 are overlapping face sheets that obscure it. The placement
+records match the displaced grid offsets. `converter/jt/extractor.py` now
+recognizes this cache pattern, drops the coarse sheet, five displaced grid
+copies, and overlapping face sheets, while retaining pieces 6/7 and the
+distinct accessories. The grid sheet is marked double-sided because its JT
+normal points away from the viewer on the ribbed side. The k_fascia result is
+22 meshes, 5,568 points, and 10,095 triangles after selection.
+
 ## Automatic sub-assembly placement (done)
 - Assembly `.prt` files: per-component placement matrices and componeoccurrence
   families are now derived automatically from the `UG_PART/UG_PART` object-model

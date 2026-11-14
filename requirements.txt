@@ -3,3 +3,4 @@ uvicorn[standard]>=0.29
 python-multipart>=0.0.9
 tqdm>=4.66
 parasolid-kit[occt]>=0.3.8
+playwright>=1.40

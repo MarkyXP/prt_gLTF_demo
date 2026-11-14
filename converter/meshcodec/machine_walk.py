@@ -12,7 +12,7 @@ window downward.
 >     r['am'], r['amM'], r['splitF'], r['splitP']); fm = md.run()-> DualVFMesh
 """
 
-from .bit_lattice import K_S, K_V, dec_mod, inc_mod
+from .bit_lattice import K_S, dec_mod, inc_mod
 from .decoder import MeshDecoderBase
 
 
@@ -104,33 +104,11 @@ class MeshDecoder(MeshDecoderBase):
     def completeV(self, iVtx, iVSlot):
         f = self.fm
         cVal = f.valence(iVtx)
-        vfi = f.v_vtx[iVtx]['iVFI']
-        v = K_V
 
-        def walk0(start, cw, step):
-            vp = f.face(iVtx, 0)
-            jp = iVSlot
-            i = start
-            stop = ilast[0]
-            while 0 <= i < cVal and ((i >= stop) if step == -1 else (i <= stop)):
-                vn = f.face(iVtx, i)
-                if vn == -1:
-                    break
-                jp = inc_mod(jp, f.degree(vp)) if cw else dec_mod(jp, f.degree(vp))
-                iVtx2 = f.vtx(vp, jp)
-                if iVtx2 == -1:
-                    break
-                jn = f.findVtxSlot(vn, iVtx2)
-                if jn < 0:
-                    break
-                jn = inc_mod(jn, f.degree(vn)) if v == 1 else dec_mod(jn, f.degree(vn))
-                self.addVtxToFace(iVtx, i, vn, jn)
-                vp = vn
-                jp = jn
-                i += step
-                if (step == 1 and i >= cVal) or (step == -1 and i < ilast[0]):
-                    break
-        ilast = [cVal]
+        # Spec Appendix E walk: the CCW sweep steps both ring counters with
+        # DecModN, the CW sweep with IncModN. Any other combination strands
+        # face degrees in the wrong context arrays and starves the walk.
+        ilast = cVal
         i = 1
         vp = f.face(iVtx, 0)
         jp = iVSlot
@@ -138,14 +116,14 @@ class MeshDecoder(MeshDecoderBase):
             vn = f.face(iVtx, i)
             if vn == -1:
                 break
-            jp = dec_mod(jp, f.degree(vp)) if v in (0, 1) else inc_mod(jp, f.degree(vp))
+            jp = dec_mod(jp, f.degree(vp))
             iVtx2 = f.vtx(vp, jp)
             if iVtx2 == -1:
                 break
             jn = f.findVtxSlot(vn, iVtx2)
             if jn < 0:
                 break
-            jn = dec_mod(jn, f.degree(vn)) if v in (0, 1) else inc_mod(jn, f.degree(vn))
+            jn = dec_mod(jn, f.degree(vn))
             self.addVtxToFace(iVtx, i, vn, jn)
             vp = vn
             jp = jn
@@ -160,14 +138,14 @@ class MeshDecoder(MeshDecoderBase):
             vn = f.face(iVtx, i)
             if vn == -1:
                 break
-            jp = inc_mod(jp, f.degree(vp)) if v in (0, 1) else dec_mod(jp, f.degree(vp))
+            jp = inc_mod(jp, f.degree(vp))
             iVtx2 = f.vtx(vp, jp)
             if iVtx2 == -1:
                 break
             jn = f.findVtxSlot(vn, iVtx2)
             if jn < 0:
                 break
-            jn = inc_mod(jn, f.degree(vn)) if v in (0, 1) else dec_mod(jn, f.degree(vn))
+            jn = inc_mod(jn, f.degree(vn))
             self.addVtxToFace(iVtx, i, vn, jn)
             vp = vn
             jp = jn

@@ -51,7 +51,7 @@ def corner_normal_ids(fm, tris, slots):
     > example
     > corner_normal_ids(fm, tris, ring_slots) -> {(tri, k): vertex_record_id}
     """
-    pop = [bin(fm.attrMask(fi) & 0xFFFFFFFF).count('1')
+    pop = [bin(fm.attrMask(fi)).count('1')
            for fi in range(fm.numFaces())]
     cum = []
     acc = 0
@@ -63,8 +63,8 @@ def corner_normal_ids(fm, tris, slots):
             continue
         for k in range(3):
             f = T[k]; s = slots[t][k]
-            mask = fm.attrMask(f) & 0xFFFFFFFF
-            bits = [i for i in range(64) if (mask >> i) & 1]
+            mask = fm.attrMask(f)
+            bits = [i for i in range(mask.bit_length()) if (mask >> i) & 1]
             ivc = sum(1 for b in bits if b <= s) - 1
             if ivc < 0:
                 ivc = len(bits) - 1
@@ -202,8 +202,14 @@ def decode_trimesh(obj_bytes, diagnostic_label=""):
     >   'npts': int, 'ntris': int, ...}
     """
     r = _rm2.load_lod0_obj(obj_bytes)
+    # Context 7 carries 64-bit face attribute masks written as three streams
+    # (30 LSBs + next 30 bits + top 4 bits); reassemble before the machine
+    # reads them, and hand it the high-degree mask words as its LRG stream.
+    am = list(r['am'])
+    am[7] = [(low & 0x3FFFFFFF) | (mid << 30) | (top << 60)
+             for low, mid, top in zip(am[7], r['amM'], r['extra'])]
     md = _md2.MeshDecoder(r['fd'], r['val'], r['vgrp'], r['vflag'],
-                          r['am'], r['amM'], r['splitF'], r['splitP'])
+                          am, r['hiDeg'], r['splitF'], r['splitP'])
     md.run()
     tris, slots = _md2.primal_from_dual(md.fm)
     pairs = [(t, s) for t in range(len(tris)) if tris[t] is not None

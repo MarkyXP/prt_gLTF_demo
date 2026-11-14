@@ -77,6 +77,7 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
         prim['_idxComp'] = 5125 if need32 else 5123
         prim['_idxW'] = 4 if need32 else 2
         prim['_color'] = m.get('color')
+        prim['_doubleSided'] = bool(m.get('doubleSided'))
         proxy_role = m.get('proxyRole')
         instances = m.get('instances') or []
         node_name = part_name or ('part-%d' % i)
@@ -146,16 +147,28 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
     for mo in meshes_out:
         prim = mo['primitives'][0]
         col = prim.pop('_color', None)
+        double_sided = prim.pop('_doubleSided', False)
         if not col:
-            prim['material'] = 0
+            if double_sided:
+                key = ("default", True)
+                if key not in mat_index:
+                    mat_index[key] = len(materials)
+                    material = dict(default_mat)
+                    material['name'] = 'default-double-sided'
+                    material['doubleSided'] = True
+                    materials.append(material)
+                prim['material'] = mat_index[key]
+            else:
+                prim['material'] = 0
             continue
         key = tuple(round(float(x), 6) for x in col)
         if len(key) == 3:
             key += (1.0,)
         if len(key) != 4:
             raise ValueError('mesh color must have three or four components')
-        if key not in mat_index:
-            mat_index[key] = len(materials)
+        material_key = (key, double_sided)
+        if material_key not in mat_index:
+            mat_index[material_key] = len(materials)
             material = {'name': 'mat-%d' % len(materials),
                         'pbrMetallicRoughness': {
                             'baseColorFactor': [float(x) for x in key],
@@ -164,8 +177,10 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
             if key[3] < 1.0:
                 material['alphaMode'] = 'BLEND'
                 material['doubleSided'] = True
+            elif double_sided:
+                material['doubleSided'] = True
             materials.append(material)
-        prim['material'] = mat_index[key]
+        prim['material'] = mat_index[material_key]
     scene_roots = list(range(len(nodes)))
     nodes.append({
         'name': 'NX Z-up to glTF Y-up',

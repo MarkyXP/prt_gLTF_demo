@@ -201,16 +201,21 @@ class ArthDec:
 def lag1(vals):
     """UnpackResiduals pred Lag1 (4 primers literal): out[i] = out[i-1] + raw[i].
 
-    NOTE: an earlier variant out[i] = out[i-4] + out[i-1] (session 4 'misreading',
-    regress here and killed the bearing-block129 walk via splitFace offsets) —
-    do not reuse. Verified: screw GT-exact + 129 closes, 2026-10-25 session 9."
+    The accumulator is 32-bit: it wraps like the Java/C int it was decoded
+    with (no wrap -> split-face offsets exceed 2**32 and the walk misindexes
+    the active list). NOTE: an earlier variant out[i] = out[i-4] + out[i-1]
+    (session 4 'misreading', regress here and killed the bearing-block129
+    walk via splitFace offsets) — do not reuse. Verified: screw GT-exact +
+    129 closes, 2026-10-25 session 9.
 
     > example
     > lag1([1, 2, 3, 4, 5]) -> [1, 2, 3, 4, 9]
+    > lag1([0, 0, 0, 0, 0xFFFFFFFF]) -> [0, 0, 0, 0, 0xFFFFFFFF]
+    > lag1([0, 0, 0, 0xFFFFFFFF, 26]) -> [0, 0, 0, 0xFFFFFFFF, 25]
     """
     out = list(vals)
     for i in range(4, len(out)):
-        out[i] = out[i - 1] + out[i]
+        out[i] = (out[i - 1] + out[i]) & 0xFFFFFFFF
     return out
 
 

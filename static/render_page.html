@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>prt-gltf-demo headless render</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #151518; }
+    #view { width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="view"></div>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+    const params = new URLSearchParams(window.location.search);
+    const camParam = params.get('cam') || '0,0,0,0,0,0';
+    const modelUrl = params.get('model') || '';
+    const width = parseInt(params.get('width') || '1920', 10);
+    const height = parseInt(params.get('height') || '1080', 10);
+    const [cx, cy, cz, roll, pitch, yaw] = camParam.split(',').map(Number);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x151518);
+
+    const camera = new THREE.PerspectiveCamera(55, width / height, 0.01, 5000);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    renderer.setSize(width, height, false);
+    renderer.setPixelRatio(1);
+    document.getElementById('view').appendChild(renderer.domElement);
+
+    // Lighting matching the main viewer
+    scene.add(new THREE.HemisphereLight(0xbfd0ff, 0x404040, 2.2));
+    const key = new THREE.DirectionalLight(0xffffff, 2.0);
+    scene.add(key);
+    scene.add(key.target);
+
+    function updateLight() {
+      camera.updateMatrixWorld();
+      const distance = camera.position.distanceTo(new THREE.Vector3(0, 0, 0));
+      const lightDirection = new THREE.Vector3().copy(camera.position).normalize();
+      const lightRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+      const lightUp = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+      key.position.copy(new THREE.Vector3(0, 0, 0))
+        .addScaledVector(lightDirection, distance / Math.sqrt(2))
+        .addScaledVector(lightRight, -distance / 2)
+        .addScaledVector(lightUp, distance / 2);
+      key.target.position.set(0, 0, 0);
+    }
+
+    const loader = new GLTFLoader();
+
+    async function loadAndRender() {
+      if (!modelUrl) {
+        console.error('No model parameter provided');
+        return;
+      }
+
+      try {
+        const gltf = await loader.loadAsync(modelUrl);
+        const root = gltf.scene || gltf.scenes[0];
+
+        // Handle transparent materials like the main viewer
+        root.traverse((object) => {
+          if (!object.isMesh) return;
+          const materials = Array.isArray(object.material) ? object.material : [object.material];
+          for (const material of materials) {
+            if (material && material.transparent) {
+              material.depthWrite = false;
+              material.needsUpdate = true;
+            }
+          }
+        });
+
+        const box = new THREE.Box3().setFromObject(root);
+        if (!box.isEmpty()) {
+          const size = box.getSize(new THREE.Vector3()).length() || 1;
+          const center = box.getCenter(new THREE.Vector3());
+          root.position.sub(center);
+          // A zero camera position requests a fitted isometric view.
+          if (cx === 0 && cy === 0 && cz === 0) {
+            const dist = size * 1.6;
+            camera.position.set(dist * 0.7, size * 0.5, dist * 0.7);
+          } else {
+            // Interpret camera position as direction vector from model center,
+            // scaled by model size. This makes camera params work across different model scales.
+            const dir = new THREE.Vector3(cx, cy, cz);
+            if (dir.length() > 0) {
+              dir.normalize();
+              const dist = size * 2.5; // default distance: 2.5x model diagonal
+              camera.position.copy(dir).multiplyScalar(dist);
+            } else {
+              // fallback if direction is zero
+              camera.position.set(size * 1.6, size * 0.5, size * 1.6);
+            }
+          }
+
+          const viewDirection = camera.position.clone().normalize();
+          camera.up.set(0, 1, 0);
+          if (Math.abs(viewDirection.dot(camera.up)) > 0.98) camera.up.set(0, 0, 1);
+          camera.lookAt(0, 0, 0);
+
+          // Apply roll, pitch, and yaw as LOCAL rotations (in camera's local space).
+          // After lookAt: camera looks down -Z, up is +Y, right is +X.
+          // Local axes: forward = -viewDirection, up = camera.up, right = camera.right.
+          // Yaw = rotate around local up (camera.up)
+          // Pitch = rotate around local right (camera.right)
+          // Roll = rotate around local forward (-viewDirection)
+          camera.updateMatrixWorld();
+          const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+          const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+          const forward = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 2).negate();
+
+          const yawQuat = new THREE.Quaternion().setFromAxisAngle(up, yaw);
+          const pitchQuat = new THREE.Quaternion().setFromAxisAngle(right, pitch);
+          const rollQuat = new THREE.Quaternion().setFromAxisAngle(forward, roll);
+          camera.quaternion.multiply(yawQuat).multiply(pitchQuat).multiply(rollQuat);
+          camera.near = Math.max(size / 1000, 0.001);
+          camera.far = Math.max(size * 100, 100);
+          camera.updateProjectionMatrix();
+        }
+
+        scene.add(root);
+        updateLight();
+        renderer.render(scene, camera);
+
+        // Signal ready for screenshot
+        window.renderReady = true;
+      } catch (err) {
+        console.error('Failed to load/render model:', err);
+        window.renderError = String(err);
+      }
+    }
+
+    loadAndRender();
+  </script>
+</body>
+</html>

@@ -55,9 +55,14 @@ Verified against an NX writer ("Version 9.4 JT  DM 10.0.2.1"):
 | `gltf_writer.py` | `write_gltf`, `_only_buffer_views`, `_gltf_json_ok` |
 | `cli.py` | `_main` |
 
-Every JT piece in the stream is exported. For supported version 9 range-LOD
-scene graphs, the nearest alternative is selected through the LSG property
-table, including all shapes in its group. Other graphs retain the existing
-segment-type fallback. Assembly writers cache one display piece per component
-in assembly coordinates, so later pieces are needed for cable/loom parts whose
-components cannot be resolved from disk.
+For supported version 9 range-LOD scene graphs, the nearest alternative is
+selected through the LSG property table, including all shapes in its group.
+Other graphs retain the existing segment-type fallback. Distinct JT pieces
+remain available, including accessory parts in multi-piece streams. When the
+stream also contains precise body meshes and an oversized coarse sheet,
+translated duplicate proxy copies are treated as family-cache alternatives.
+If a matching full-body tessellation is present, it replaces overlapping
+detailed face sheets, and only the grid-cache copy aligned to the body is
+retained for display. That flat grid mesh is marked double-sided so it remains
+visible from either side. Without the whole-body mesh, the body-aligned copy
+is selected as a fallback.

@@ -32,6 +32,7 @@ def mesh_collection(data: bytes) -> list[dict]:
                 "jtPiece": mesh["piece"],
                 "t": triangle_mesh,
                 "color": triangle_mesh.get("color"),
+                "doubleSided": triangle_mesh.get("doubleSided", False),
             })
     return collection
 

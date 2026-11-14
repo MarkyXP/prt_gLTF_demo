@@ -73,6 +73,7 @@ function updateOpacityReadout() {
 }
 
 export function initDisplayStyle() {
+  opacitySlider.value = '100';
   updateOpacityReadout();
   shadedRadio.addEventListener('change', applyDisplayStyle);
   wireframeRadio.addEventListener('change', applyDisplayStyle);

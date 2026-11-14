@@ -27,6 +27,19 @@ class MaterialTests(unittest.TestCase):
         self.assertEqual(coloured["metallicFactor"], neutral["metallicFactor"])
         self.assertEqual(coloured["roughnessFactor"], neutral["roughnessFactor"])
 
+    def test_double_sided_mesh_sets_the_glTF_material_flag(self):
+        triangle = {"pts": [(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+                    "tris": [(0, 1, 2)]}
+        with tempfile.TemporaryDirectory() as directory:
+            stem = str(Path(directory) / "model")
+            write_gltf([{"t": triangle, "doubleSided": True}],
+                       stem, glb=True)
+            data = Path(stem + ".glb").read_bytes()
+        json_length = struct.unpack_from("<I", data, 12)[0]
+        document = json.loads(data[20:20 + json_length])
+        material_index = document["meshes"][0]["primitives"][0]["material"]
+        self.assertTrue(document["materials"][material_index]["doubleSided"])
+
 
 if __name__ == "__main__":
     unittest.main()

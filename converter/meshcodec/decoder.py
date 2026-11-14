@@ -143,27 +143,25 @@ class MeshDecoderBase:
         if cDeg == 0:
             return -1
         iFace = self.fm.numFaces()
-        actx = min(7, max(0, cDeg - 2))
-        uMask = self._nextAttrMaskSymbol(actx)
-        nFaceAttrs = bin(uMask & 0xFFFFFFFF).count('1')
-        if cDeg > 64:
-            cFaceAttrs = 0
-            m = uMask
-            for i in range(64):
-                if m & 1: cFaceAttrs += 1
-                m >>= 1
+        nFaceAttrs = 0
+        if cDeg <= 64:
+            actx = min(7, max(0, cDeg - 2))
+            uMask = self._nextAttrMaskSymbol(actx)
+            nFaceAttrs = bin(uMask).count('1')
+            self.fm.newFace(iFace, cDeg, nFaceAttrs, uMask)
+        else:
             vb = []
-            nw = (cDeg + 63) >> 5
+            nw = (cDeg + 31) >> 5
             for i in range(nw):
                 v = self.attrLRG[self.rAttrL] if self.rAttrL < len(self.attrLRG) else 0
                 self.rAttrL += 1
-                cFaceAttrs += bin(v).count('1')
                 vb.append(v)
-            self.fm.newFace(iFace, cDeg, cFaceAttrs, 0, 0)
-            self.attrLRGVB = getattr(self, 'attrLRGVB', {})
-            self.attrLRGVB[iFace] = (uMask, vb)
-        else:
-            self.fm.newFace(iFace, cDeg, nFaceAttrs, uMask & 0xFFFFFFFF)
+            uMask = 0
+            for i, v in enumerate(vb):
+                uMask |= v << (32 * i)
+            cFaceAttrs = bin(uMask & ((1 << cDeg) - 1)).count('1')
+            self.fm.newFace(iFace, cDeg, cFaceAttrs, uMask)
+            nFaceAttrs = cFaceAttrs
         if nFaceAttrs > cDeg:
             return -2
         for s in range(nFaceAttrs):

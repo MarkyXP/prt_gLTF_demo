@@ -37,6 +37,46 @@
   `uv run python -m doctest ...`. This keeps the project virtual
   environment and dependencies managed by `uv`.
 
+## CLI Commands
+
+The `app.py` entrypoint provides several subcommands:
+
+### `render` — Render a `.prt` file to PNG
+
+```bash
+uv run app.py render "<input.prt>" [--camera x,y,z,roll,pitch,yaw] [--output out.png] [--width W] [--height H]
+```
+
+**Arguments:**
+- `input.prt` — Path to the `.prt` file to render. Quote Windows paths that contain spaces.
+- `--camera` — Six comma-separated values: camera position `x,y,z` in model units, then local `roll,pitch,yaw` offsets in radians. The model is centered before rendering and the camera initially aims at its center. A zero position requests an auto-fit isometric view. Default: `0,0,0,0,0,0`.
+- `--output` — Output PNG path. Default: `temp/<stem>_<timestamp>.png`
+- `--width` — Render width in pixels. Default: `1920`
+- `--height` — Render height in pixels. Default: `1080`
+
+**Camera examples:**
+- Auto-fit isometric: omit `--camera` (recommended starting view).
+- Broad face from +Z: `--camera "0,0,1.5,0,0,0"`
+- Opposite broad face from -Z: `--camera "0,0,-1.5,0,0,0"`
+- Edge from +X: `--camera "1.5,0,0,0,0,0"`
+- Edge from +Y: `--camera "0,1.5,0,0,0,0"`
+- For `55_0222_100_k_fascia.prt`, use the auto-fit default for an overview; `--camera "0,0,-1.5,0,0,0"` shows the side with the rear hardware. The opposite side is at +Z.
+
+For an explicit camera position, choose a distance appropriate to the model's units and size; positions around 1–2 units work well for this fascia. The camera always aims at the centered model before applying the optional local Euler offsets. Top/bottom-axis views use Z as screen-up to avoid a singular camera orientation.
+
+**How it works:**
+1. Converts the `.prt` file to GLB (using the existing conversion pipeline)
+2. Starts a temporary HTTP server to serve the GLB bytes
+3. Launches headless Chromium via Playwright
+4. Loads `static/render_page.html` with camera/model URL parameters
+5. The page uses three.js (GLTFLoader) with the same lighting/materials as the web viewer
+6. Captures a screenshot when `window.renderReady` fires
+7. Saves PNG to the output path
+
+**Output location:** By default, renders are saved to `temp/`; use `--output "temp/renders/name.png"` to keep them in a dedicated folder. The `temp/` folder is gitignored.
+
+**Dependencies:** Requires `playwright` (installed via `requirements.txt`), Chromium (`uv run playwright install chromium`), and network access for the render page's three.js CDN imports.
+
 ## Code style
 
 - **File size**: keep every file under **400 lines**. If a file would exceed
