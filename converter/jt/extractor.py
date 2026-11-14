@@ -249,7 +249,7 @@ def extract_meshes(x):
     meshes = []
     for name, v in streams:
         data = v.data if hasattr(v, 'data') else v
-        if not _is_jt_candidate(data):
+        if name.endswith('DisplayJT') or not _is_jt_candidate(data):
             continue
         bases = jt_piece_bases(data)
         if not bases:

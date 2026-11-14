@@ -191,7 +191,10 @@ are children of each mesh node so they inherit the same instance transform.
   swap two same-size sibling parts (e.g. the concentric vs eccentric bearing
   variant); the byte-derived alternative (matching each family's connector id
   against the child file payload) worked for one of the four families.
-* Colour attributes are not converted yet.
+* Colour attributes are partly converted: body palette colours are applied,
+  while per-face palette overrides and MATTEX shader/decal materials are
+  still open. Embedded `/Root/display/images/` artwork PNGs are exposed by
+  the container reader but are not bound to faces in the decoded JT data.
 
 ## AI usage
 

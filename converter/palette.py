@@ -75,6 +75,43 @@ def _decode_atoms(data: bytes, lo: int, hi: int) -> "list[float]":
     return vals
 
 
+def _atom_run(payload: bytes, lo: int, hi: int) -> "tuple[list[float], int]":
+    """Decode whole colour atoms in payload[lo:hi] and report bytes consumed."""
+    vals = []
+    at = lo
+    while at < hi:
+        b0 = payload[at]
+        if b0 in (0, 1):
+            vals.append(float(b0)); at += 1; continue
+        if hi - at >= 4 and (0x40 <= b0 <= 0x5F or 0xC0 <= b0 <= 0xDF):
+            f64bits = bytes([(b0 - 0x10) & 0xFF]) + payload[at + 1:at + 4] + b"\x00\x00\x00\x00"
+            vals.append(struct.unpack(">d", f64bits)[0] / 4.0); at += 4; continue
+        if hi - at >= 8 and (0x20 <= b0 <= 0x3F or 0xA0 <= b0 <= 0xBF):
+            vals.append(struct.unpack(">d", bytes([(b0 + 0x10) & 0xFF]) + payload[at + 1:at + 8])[0] / 4.0)
+            at += 8; continue
+        return [], lo
+    return vals, at
+
+
+def _row_before_name(payload: bytes, name_at: int):
+    """Exactly-three-atom palette row immediately before a roster name.
+
+    The verified grammar is ``<01 80 XX> [r g b] 03 <len+name+00>``.  Only
+    accept a row whose head, atom run, and ``03`` terminator line up with
+    the name byte-for-byte; parts that store a bare name roster (no
+    per-entry RGB rows) then yield no rows instead of garbage colours.
+    """
+    if name_at < 1 or payload[name_at - 1] != 0x03:
+        return None
+    for head in range(name_at - 2, max(0, name_at - 64) - 1, -1):
+        if payload[head:head + 2] != _HEAD_SIGNATURE:
+            continue
+        vals, end = _atom_run(payload, head + 3, name_at - 1)
+        if len(vals) == 3 and end == name_at - 1:
+            return tuple(round(v, 9) for v in vals), head
+    return None
+
+
 def palette_rows(payload: bytes) -> "list[tuple[str, tuple[float,float,float], int]]":
     """(name, rgb, atom_opener_offset) triples for all rows in the palette.
 
@@ -101,16 +138,11 @@ def palette_rows(payload: bytes) -> "list[tuple[str, tuple[float,float,float], i
         names.append([pos, n, nm])
         pos += n
     out = []
-    for k in range(len(names)):
-        p, n, nm = names[k]
-        lo = (names[k - 1][0] + names[k - 1][1]) if k else start + 12
-        j = payload.rfind(_HEAD_SIGNATURE, lo, p)
-        if j < 0:
-            continue
-        atom0 = j + 3
-        vals = _decode_atoms(payload, atom0, p - 1)
-        if len(vals) >= 3:
-            out.append((nm, tuple(round(v, 9) for v in vals[:3]), j))
+    for p, n, nm in names:
+        row = _row_before_name(payload, p)
+        if row is not None:
+            rgb, head = row
+            out.append((nm, rgb, head))
     return out
 
 

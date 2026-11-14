@@ -173,7 +173,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
         return collection
 
     step_started = time.perf_counter()
-    jt_collection = mesh_collection(data)
+    jt_collection = mesh_collection(data, str(path))
     jt_ms = (time.perf_counter() - step_started) * 1000
     jt_collection, dropped_transparent = paint_body_display(
         str(path), jt_collection)

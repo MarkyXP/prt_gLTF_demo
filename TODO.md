@@ -71,6 +71,28 @@ distinct accessories. The grid sheet is marked double-sided because its JT
 normal points away from the viewer on the ribbed side. The k_fascia result is
 22 meshes, 5,568 points, and 10,095 triangles after selection.
 
+## Colour / decal follow-up (session 2026-11-14)
+- Fixed the magenta regression: `converter/palette.py` now accepts only the
+  verified `<01 80 XX> [r g b] 03 <name>` palette-row grammar. A part that
+  stores a bare name roster (like `55_0222_100_k_fascia.prt`) yields zero
+  custom rows and falls back to `nx_default_palette.json`, so palette index 1
+  renders white instead of the garbage magenta row.
+- The trailing SPLM directory (display images, `DisplayJT`, PMI,
+  `materialsXML`) is now merged by `parse_splm`; `extract_meshes` skips
+  `DisplayJT` so it is not rendered twice.
+- Investigated the embedded artwork: the PNGs live under
+  `/Root/display/images/` and the image table records their pixel size, but
+  the decoded JT/DisplayJT meshes carry no texture-coordinate channels
+  (`bindings = 0x0A`), no LSG material, and no `materialsXML` decal layer.
+  No record binds an image to a face, so a face-accurate decal cannot be
+  produced from the current decode. The previous front-face quad overlay was
+  a synthetic placement and has been removed; the GLB writer still supports
+  UVs/textures for future data.
+- Still open: decode the NX visualization-scene/decal binding (or the sketch
+  curves that draw the artwork), per-face palette overrides, and whether the
+  windowed front sheet (pieces 28/29) should be kept in the default display
+  selection.
+
 ## Automatic sub-assembly placement (done)
 - Assembly `.prt` files: per-component placement matrices and componeoccurrence
   families are now derived automatically from the `UG_PART/UG_PART` object-model

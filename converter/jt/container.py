@@ -45,6 +45,35 @@ def open_prt(path):
         raise ValueError('not a SPLM/OLE2 container: %r' % blob[:8])
     return parse_splm(blob)
 
+def _directory_chain(blob, start):
+    """Walk a [u32 len][name][u64 offset][u64 length] chain from `start`."""
+    pos = start
+    entries = []
+    n = len(blob)
+    while pos + 4 <= n:
+        nlen = struct.unpack_from('<I', blob, pos)[0]
+        if not (1 <= nlen <= 256):
+            break
+        name = blob[pos + 4:pos + 4 + nlen].rstrip(b'\x00')
+        if not name or not re.fullmatch(rb'[A-Za-z0-9 _.,()/\\\-]+', name):
+            break
+        q = pos + 4 + nlen
+        if q + 16 > n:
+            break
+        pay_start, pay_len = struct.unpack_from('<QQ', blob, q)
+        entries.append((name.decode('latin1'), pay_start, pay_len))
+        pos = q + 16
+    return entries
+
+
+def _chain_is_payload(entries, size):
+    """True when a directory chain has real in-file payload entries."""
+    return (len(entries) >= 3
+            and any(name.startswith('/Root/') for name, _, _ in entries)
+            and any(0 < start and start + length <= size and length > 0
+                    for _, start, length in entries))
+
+
 def parse_splm(blob):
     """Parse an SPLM container directory into named Stream records.
 
@@ -54,6 +83,9 @@ def parse_splm(blob):
     start offset is probed and the longest valid chain wins (>= 3 entries,
     at least one '/Root/' name, at least one real payload entry).
 
+    NX can append a second directory (display images, DisplayJT, PMI,
+    material XML) after the main payload; those chains are merged too.
+
     > example
     > parse_splm(open('part.prt', 'rb').read()) -> {'/Root/...': Stream}
     """
@@ -61,28 +93,20 @@ def parse_splm(blob):
     n = len(blob)
     best = []
     for start in range(0x10, min(0x200, n - 24)):
-        pos = start
-        entries = []
-        while pos + 4 <= n:
-            nlen = struct.unpack_from('<I', blob, pos)[0]
-            if not (1 <= nlen <= 256):
-                break
-            name = blob[pos+4:pos+4+nlen].rstrip(b'\x00')
-            if not name or not re.fullmatch(rb'[A-Za-z0-9 _./\-]+', name):
-                break
-            q = pos + 4 + nlen
-            if q + 16 > n:
-                break
-            pay_start, pay_len = struct.unpack_from('<QQ', blob, q)
-            entries.append((name.decode('ascii'), pay_start, pay_len))
-            pos = q + 16
-        if len(entries) > len(best) and any(nm.startswith('/Root/')
-                                            for nm, _, _ in entries) \
-                and any(0 < st and st + ln <= n and ln > 0 for _, st, ln in entries):
+        entries = _directory_chain(blob, start)
+        if len(entries) > len(best) and _chain_is_payload(entries, n):
             best = entries
-    entries = best
+    entries = list(best)
+    for marker in (b'/Root/display/', b'/Root/materialsXML/', b'/Root/pmi/'):
+        pos = blob.find(marker)
+        while pos >= 4:
+            tail = _directory_chain(blob, pos - 4)
+            if _chain_is_payload(tail, n):
+                entries.extend(tail)
+                break
+            pos = blob.find(marker, pos + 1)
     for name, st, ln in entries:
-        if ln == 0 or st <= 0 or st + ln > n:
+        if ln == 0 or st <= 0 or st + ln > n or name in streams:
             continue
         d0 = blob[st:st+ln]
         streams[name] = Stream(name, st, ln, d0)

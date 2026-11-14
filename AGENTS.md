@@ -41,14 +41,14 @@
 
 The `app.py` entrypoint provides several subcommands:
 
-### `render` — Render a `.prt` file to PNG
+### `render` — Render a `.prt`, `.glb`, or `.gltf` file to PNG
 
 ```bash
-uv run app.py render "<input.prt>" [--camera x,y,z,roll,pitch,yaw] [--output out.png] [--width W] [--height H]
+uv run app.py render "<input>" [--camera x,y,z,roll,pitch,yaw] [--output out.png] [--width W] [--height H]
 ```
 
 **Arguments:**
-- `input.prt` — Path to the `.prt` file to render. Quote Windows paths that contain spaces.
+- `input` — Path to the file to render. A `.prt` file is converted to GLB first; a `.glb` or `.gltf` file is rendered directly with the conversion step skipped. For `.gltf`, sibling `.bin`/texture files are served from the same folder. Quote Windows paths that contain spaces.
 - `--camera` — Six comma-separated values: camera position `x,y,z` in model units, then local `roll,pitch,yaw` offsets in radians. The model is centered before rendering and the camera initially aims at its center. A zero position requests an auto-fit isometric view. Default: `0,0,0,0,0,0`.
 - `--output` — Output PNG path. Default: `temp/<stem>_<timestamp>.png`
 - `--width` — Render width in pixels. Default: `1920`
@@ -65,8 +65,8 @@ uv run app.py render "<input.prt>" [--camera x,y,z,roll,pitch,yaw] [--output out
 For an explicit camera position, choose a distance appropriate to the model's units and size; positions around 1–2 units work well for this fascia. The camera always aims at the centered model before applying the optional local Euler offsets. Top/bottom-axis views use Z as screen-up to avoid a singular camera orientation.
 
 **How it works:**
-1. Converts the `.prt` file to GLB (using the existing conversion pipeline)
-2. Starts a temporary HTTP server to serve the GLB bytes
+1. For `.prt` inputs, converts the file to GLB using the existing conversion pipeline; `.glb`/`.gltf` inputs skip this step
+2. Starts a temporary HTTP server to serve the model and any sibling assets
 3. Launches headless Chromium via Playwright
 4. Loads `static/render_page.html` with camera/model URL parameters
 5. The page uses three.js (GLTFLoader) with the same lighting/materials as the web viewer

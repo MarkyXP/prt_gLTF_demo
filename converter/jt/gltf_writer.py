@@ -38,19 +38,24 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
         if not pts or not tris:
             continue
         cn = t.get('cornerNormals')
+        uvs = t.get('uvs')
         if cn and len(cn) == 3 * len(tris):
             render_pts = []
             render_normals = []
+            render_uvs = [] if uvs else None
             render_tris = []
             for ti, tri in enumerate(tris):
                 base = len(render_pts)
                 for k, vi in enumerate(tri):
                     render_pts.append(pts[vi])
                     render_normals.append(cn[3 * ti + k])
+                    if render_uvs is not None:
+                        render_uvs.append(uvs[vi])
                 render_tris.append((base, base + 1, base + 2))
         else:
             render_pts = pts
             render_normals = None
+            render_uvs = uvs
             render_tris = tris
         while len(bufs) % 4:
             bufs += b'\x00'
@@ -69,6 +74,14 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
                 for x in n:
                     bufs += struct.pack('<f', x)
             prim['_normOff'] = (n0, len(render_normals))
+        if render_uvs is not None:
+            uv0 = len(bufs)
+            for uv in render_uvs:
+                bufs += struct.pack('<ff', float(uv[0]), float(uv[1]))
+            prim['_uvOff'] = (uv0, len(render_uvs))
+        if t.get('image'):
+            prim['_image'] = (t.get('imageName') or ('image-%d' % i),
+                              t['image'])
         i0 = len(bufs)
         need32 = bool(render_tris) and max(max(T) for T in render_tris) > 65535
         for T in render_tris:
@@ -123,6 +136,16 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
             prim['attributes']['NORMAL'] = len(accessors) - 1
             assert n0 == byteEnd
             byteEnd += 12 * nc
+        if '_uvOff' in prim:
+            u0, uc = prim.pop('_uvOff')
+            vu = len(views)
+            views.append({'buffer': 0, 'byteOffset': u0,
+                          'byteLength': 8 * uc, 'target': 34962})
+            accessors.append({'bufferView': vu, 'componentType': 5126,
+                              'count': uc, 'type': 'VEC2'})
+            prim['attributes']['TEXCOORD_0'] = len(accessors) - 1
+            assert u0 == byteEnd
+            byteEnd += 8 * uc
         i0, ic = prim.pop('_idx')
         icomp = prim.pop('_idxComp', 5123)
         iw = prim.pop('_idxW', 2)
@@ -143,11 +166,38 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
                                             'metallicFactor': 0.1,
                                             'roughnessFactor': 0.6}}
     materials = [default_mat]
+    images, textures, samplers = [], [], []
+    image_index = {}
     mat_index = {}
     for mo in meshes_out:
         prim = mo['primitives'][0]
         col = prim.pop('_color', None)
         double_sided = prim.pop('_doubleSided', False)
+        image = prim.pop('_image', None)
+        if image is not None:
+            name, payload = image
+            key = (name, len(payload))
+            if key not in image_index:
+                import base64
+                uri = 'data:image/png;base64,' + base64.b64encode(payload).decode('ascii')
+                images.append({'name': name, 'uri': uri})
+                samplers.append({'magFilter': 9729, 'minFilter': 9729,
+                                 'wrapS': 33071, 'wrapT': 33071})
+                textures.append({'sampler': len(samplers) - 1,
+                                 'source': len(images) - 1})
+                image_index[key] = len(textures) - 1
+            texture = image_index[key]
+            material = {'name': 'decal-%d' % texture,
+                        'pbrMetallicRoughness': {
+                            'baseColorTexture': {'index': texture},
+                            'metallicFactor': 0.0,
+                            'roughnessFactor': 0.8,
+                        },
+                        'alphaMode': 'BLEND',
+                        'doubleSided': True}
+            materials.append(material)
+            prim['material'] = len(materials) - 1
+            continue
         if not col:
             if double_sided:
                 key = ("default", True)
@@ -204,6 +254,10 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
         'buffers': [{'byteLength': len(bufs)}],
         'bufferViews': views,
     }
+    if images:
+        doc['images'] = images
+        doc['textures'] = textures
+        doc['samplers'] = samplers
     json_text = _json.dumps(doc)
     if glb:
 

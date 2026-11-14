@@ -17,13 +17,21 @@ from pathlib import Path
 import prt_jt
 
 
-def mesh_collection(data: bytes) -> list[dict]:
+def mesh_collection(data: bytes, part_path=None) -> list[dict]:
     """Decode every embedded-JT mesh into the glTF writer's input shape.
 
     > example
     > mesh_collection(part_bytes)
       -> [{"stream": name, "t": triangle mesh, "color": rgb or None}, ...]
     """
+    if part_path is not None and data[:4] == b"SPLM":
+        try:
+            from converter.face_colour import decorate_colour_mesh
+            coloured = decorate_colour_mesh(part_path)
+            if coloured:
+                return coloured
+        except Exception:
+            pass
     collection = []
     for mesh in prt_jt.extract_meshes(data):
         for triangle_mesh in mesh["meshes"]:
