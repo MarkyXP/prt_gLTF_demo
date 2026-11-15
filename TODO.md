@@ -88,10 +88,15 @@ normal points away from the viewer on the ribbed side. The k_fascia result is
   produced from the current decode. The previous front-face quad overlay was
   a synthetic placement and has been removed; the GLB writer still supports
   UVs/textures for future data.
-- Still open: decode the NX visualization-scene/decal binding (or the sketch
-  curves that draw the artwork), per-face palette overrides, and whether the
-  windowed front sheet (pieces 28/29) should be kept in the default display
-  selection.
+- Per-face palette overrides are DECODED and fully file-derived
+  (`converter/face_colour.py`): the `47 03 04 01 c0 44 04 00` marker is a
+  header for the following `02 0d` face body, the colour token follows the
+  marker, and the JT `vgrp` group id is the ascending rank of the face body's
+  leading face-id varint. The fascia yields 2796 face rows, 2796 distinct face
+  ids, and 39 non-white rows `{50: 16, 173: 18, 186: 3, 159: 2}` with no NX
+  calibration data. Remaining open: decode the NX visualization-scene/decal
+  binding (or the sketch curves that draw the artwork) and decide whether the
+  windowed front sheet (pieces 28/29) stays in the default display selection.
 
 ## Automatic sub-assembly placement (done)
 - Assembly `.prt` files: per-component placement matrices and componeoccurrence

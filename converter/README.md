@@ -20,6 +20,7 @@ modules through the flat imports `app.py` sets up (`converter/` is on
 | `suppress_state.py` | per-component suppress-state records (structure-row reader + loader-side flag reader) |
 | `color_index.py`  | part-colour record reader (NX palette index) + translucent-percent sites |
 | `palette.py`      | palette row-RGB decoder merged over the factory default table |
+| `face_colour.py`  | per-face display-colour rows decoded from `UG_PART` (header model + face-id rank) |
 | `nx_default_palette.json` | 216-entry factory colour table fallback |
 | `meshdec2.py` / `runmesh2.py` / `cdpx2.py` / `emu4.py` | mesh/CLI helpers for the tessellation route |
 | `occ_tess.py` / `occ_brep.py` / `parasolid.py` helpers | optional OCCT/Parasolid toolchain glue |
@@ -33,6 +34,13 @@ Modules referenced by the pipelines:
   `suppress_state` (loader suppress flags).
 * leaf part colour: `color_index` (`body_translucency`,
   `part_colour_index`), `palette` (`palette_table`).
+* per-face display colours: `face_colour` (`face_colour_rows`,
+  `decorate_colour_mesh`). Colours are fully file-derived from the
+  `UG_PART/UG_PART` marker-headed rows: the `47 03 04 01 c0 44 04 00`
+  marker heads the following `02 0d` face body, the colour token sits
+  immediately after the marker, and the face body's leading varint is the
+  face id. The JT `vgrp` group id is the ascending rank of that face id
+  over all rows. No calibration table is used.
 
 Byte-level format facts (hex patterns, slot formulas, record grammars)
 live in each module's docstring; run modules with `python -m doctest`
