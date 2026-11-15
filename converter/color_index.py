@@ -124,6 +124,28 @@ def body_palette_records(part_path):
     ]
 
 
+def _bounds_before(payload, colour_offset):
+    """Decode the six shifted doubles 56 bytes before a body colour header.
+
+    > example
+    > _bounds_before(payload, site.offset) -> (xmin, ymin, zmin, xmax, ymax, zmax)
+    >   or None when the atom head is absent or malformed
+    """
+    start = colour_offset - 56
+    if start < 0 or payload[start:start + 4] != b"\xf0\x01\x01\x07":
+        return None
+    atoms = payload[start + 4:colour_offset - 4]
+    if len(atoms) != 48 or not all(
+            0x20 <= atoms[i] <= 0x3f or 0xa0 <= atoms[i] <= 0xbf
+            for i in range(0, 48, 8)):
+        return None
+    return tuple(
+        struct.unpack(">d", bytes([(atoms[i] + 0x10) & 0xff])
+                      + atoms[i + 1:i + 8])[0] / 4
+        for i in range(0, 48, 8)
+    )
+
+
 def body_palette_bounds_records(part_path):
     """Return palette records with candidate body bounds, when encoded as six doubles.
 
@@ -136,24 +158,55 @@ def body_palette_bounds_records(part_path):
         return []
     from converter.palette import palette_table
     table = palette_table(payload)
-    records = []
+    return [
+        (site.token, table.get(site.token),
+         _bounds_before(payload, site.offset))
+        for site in colour_sites(payload) if site.kind == "body"
+    ]
+
+
+def body_colour_by_tag(part_path):
+    """Map each body tag to its decoded colour and candidate bounds.
+
+    A body-colour record is followed by a body row of the form::
+
+        02 <body_tag> 01 93 8e ...
+
+    so the tag is directly readable after the palette token. Records whose
+    tail is not a body row are ignored. The bounds come from the six encoded
+    doubles that precede the colour header and are used only to break ties
+    between bodies that share a face count.
+
+    > example
+    > body_colour_by_tag("loom.prt")
+    > -> {43: {"palette": 125, "rgb": (0.6, 0.4, 0.2),
+    >          "bounds": (xmin, ymin, zmin, xmax, ymax, zmax)}, ...}
+    """
+    payload = find_ug_part(part_path)
+    if payload is None:
+        return {}
+    from converter.palette import palette_table
+    table = palette_table(payload)
+    out = {}
     for site in colour_sites(payload):
         if site.kind != "body":
             continue
-        start = site.offset - 56
-        bounds = None
-        if start >= 0 and payload[start:start + 4] == b"\xf0\x01\x01\x07":
-            atoms = payload[start + 4:site.offset - 4]
-            if len(atoms) == 48 and all(
-                    0x20 <= atoms[i] <= 0x3f or 0xa0 <= atoms[i] <= 0xbf
-                    for i in range(0, 48, 8)):
-                bounds = tuple(
-                    struct.unpack(">d", bytes([(atoms[i] + 0x10) & 0xff])
-                                  + atoms[i + 1:i + 8])[0] / 4
-                    for i in range(0, 48, 8)
-                )
-        records.append((site.token, table.get(site.token), bounds))
-    return records
+        decoded = _decode_token(payload, site.offset + 4)
+        if decoded is None:
+            continue
+        palette, width = decoded
+        body = site.offset + 4 + width
+        if payload[body:body + 1] != b"\x02":
+            continue
+        tag = payload[body + 1]
+        if payload[body + 2:body + 5] != b"\x01\x93\x8e":
+            continue
+        out[tag] = {
+            "palette": palette,
+            "rgb": table.get(palette),
+            "bounds": _bounds_before(payload, site.offset),
+        }
+    return out
 
 
 def body_palette_index_rgb(part_path):

@@ -102,15 +102,21 @@ def paint_body_display(path: str, collection: list[dict]) -> tuple[list[dict], i
             else (index, None, bounds)
             for index, rgb, bounds in body_palette_bounds_records(str(path))
         ]
-        matches = _match_body_bounds(collection, records) if len(records) > 1 else None
-        if len(records) > 1 and matches is None:
-            LOGGER.warning("Cannot confidently match body colours to JT bounds for %s; using record order", path)
-        elif matches is not None:
-            piece_count = len({(entry["stream"], entry["jtPiece"])
-                               for entry in collection})
-            if len(matches) < piece_count:
-                LOGGER.warning("Matched body colours for %d of %d JT pieces in %s; unmatched pieces retain their JT colours",
-                               len(matches), piece_count, path)
+        face_only = bool(collection) and all(
+            entry.get("colourSource") == "nx" for entry in collection)
+        matches = None
+        if not face_only:
+            matches = (
+                _match_body_bounds(collection, records)
+                if len(records) > 1 else None)
+            if len(records) > 1 and matches is None:
+                LOGGER.warning("Cannot confidently match body colours to JT bounds for %s; using record order", path)
+            elif matches is not None:
+                piece_count = len({(entry["stream"], entry["jtPiece"])
+                                   for entry in collection})
+                if len(matches) < piece_count:
+                    LOGGER.warning("Matched body colours for %d of %d JT pieces in %s; unmatched pieces retain their JT colours",
+                                   len(matches), piece_count, path)
         if len(records) > 1:
             per_entry = records
         elif records:
@@ -118,6 +124,8 @@ def paint_body_display(path: str, collection: list[dict]) -> tuple[list[dict], i
         else:
             per_entry = []
         for position, entry in enumerate(collection):
+            if entry.get("colourSource") == "nx":
+                continue
             if matches is not None:
                 index = matches.get((entry["stream"], entry["jtPiece"]))
                 rgb = records[index][1] if index is not None else None
