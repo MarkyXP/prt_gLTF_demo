@@ -13,7 +13,53 @@ from .container import (OLE_MAGIC, _is_jt_candidate, _ole_flat,
                         iter_jt_streams, jt_piece_bases, open_prt,
                         parse_splm)
 from .frames import parse_jt
+from .geometry import is_axis_aligned_box
 from .trimesh import _decode_piece
+
+_BODY_ALGORITHM_KEY = "NXBodyAlgorithm"
+_SIMPLIFIED_NAME_KEY = "JT_PROP_SIMP_NAME"
+
+
+def drop_untagged_envelope_boxes(pieces):
+    """Remove undisplayed box envelopes from streams with tagged bodies.
+
+    NX bodies bind the ``NXBodyAlgorithm`` LSG property key. A stream that
+    binds it on any piece also carries untagged modelled solids that NX keeps
+    hidden. Such a hidden envelope is exactly one axis-aligned box and binds
+    neither ``NXBodyAlgorithm`` nor ``JT_PROP_SIMP_NAME``. The rule is scoped
+    per stream, so files whose bodies are all proxies remain untouched.
+
+    > example
+    > drop_untagged_envelope_boxes(pieces) -> pieces without hidden boxes
+    """
+    tagged_streams = {
+        piece.get("stream") for piece in pieces
+        if _BODY_ALGORITHM_KEY in piece.get("lsgPropertyKeys", ())
+    }
+    kept = []
+    for piece in pieces:
+        keys = piece.get("lsgPropertyKeys", ())
+        if (piece.get("stream") in tagged_streams
+                and _BODY_ALGORITHM_KEY not in keys
+                and _SIMPLIFIED_NAME_KEY not in keys
+                and _is_envelope_box(piece.get("meshes", []))):
+            continue
+        kept.append(piece)
+    return kept
+
+
+def _is_envelope_box(meshes):
+    """Return whether a piece decoded to exactly one axis-aligned box.
+
+    > example
+    > _is_envelope_box([{"pts": box_corners, "tris": box_triangles}]) -> True
+    """
+    if len(meshes) != 1:
+        return False
+    mesh = meshes[0]
+    unique = {tuple(round(float(value), 6) for value in point)
+              for point in mesh.get("pts", [])}
+    return len(unique) == 8 and is_axis_aligned_box(mesh)
 
 
 def select_display_pieces(pieces):
@@ -27,6 +73,7 @@ def select_display_pieces(pieces):
     > example
     > select_display_pieces(decoded_pieces) -> pieces with visible geometry
     """
+    pieces = drop_untagged_envelope_boxes(pieces)
     meshes = [
         (piece_index, mesh_index, mesh)
         for piece_index, piece in enumerate(pieces)

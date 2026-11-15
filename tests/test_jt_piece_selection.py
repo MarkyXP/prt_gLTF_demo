@@ -2,12 +2,44 @@
 
 import unittest
 
-from converter.jt.extractor import select_display_pieces
+from converter.jt.extractor import (drop_untagged_envelope_boxes,
+                                    select_display_pieces)
+
+BOX_POINTS = [
+    (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (1.0, 1.0, 0.0),
+    (0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (1.0, 1.0, 1.0),
+]
+BOX_TRIANGLES = [
+    (0, 1, 3), (0, 3, 2), (4, 5, 7), (4, 7, 6),
+    (0, 1, 5), (0, 5, 4), (2, 3, 7), (2, 7, 6),
+    (0, 2, 6), (0, 6, 4), (1, 3, 7), (1, 7, 5),
+]
+BODY_KEYS = frozenset({"NXBodyAlgorithm"})
+HIDDEN_KEYS = frozenset({"JT_LLPROP_SHAPEIMPL", "JT_LLPROP_LWPA"})
 
 
 def mesh(points, triangles):
     """Build the small mesh dictionaries used by these selection tests."""
     return {"pts": points, "tris": triangles}
+
+
+def box_mesh():
+    """Build one exact axis-aligned box boundary mesh.
+
+    > example
+    > box_mesh() -> {"pts": 8 corners, "tris": 12 side triangles}
+    """
+    return mesh(list(BOX_POINTS), list(BOX_TRIANGLES))
+
+
+def cover_mesh():
+    """Build a clearly non-box mesh used as a surviving sibling body.
+
+    > example
+    > cover_mesh() -> {"pts": [...], "tris": [...]}
+    """
+    return mesh([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)],
+                [(0, 1, 2)])
 
 
 class JtPieceSelectionTests(unittest.TestCase):
@@ -107,6 +139,65 @@ class JtPieceSelectionTests(unittest.TestCase):
             [piece["piece"] for piece in selected if piece["meshes"]],
             [6, 7],
         )
+
+
+class HiddenEnvelopeBoxTests(unittest.TestCase):
+    def test_drops_untagged_box_with_tagged_sibling(self):
+        pieces = [
+            {"stream": "JT", "piece": 0, "lsgPropertyKeys": HIDDEN_KEYS,
+             "meshes": [box_mesh()]},
+            {"stream": "JT", "piece": 1, "lsgPropertyKeys": BODY_KEYS,
+             "meshes": [cover_mesh()]},
+        ]
+
+        kept = drop_untagged_envelope_boxes(pieces)
+
+        self.assertEqual([piece["piece"] for piece in kept], [1])
+
+    def test_keeps_tagged_box(self):
+        pieces = [
+            {"stream": "JT", "piece": 0, "lsgPropertyKeys": BODY_KEYS,
+             "meshes": [box_mesh()]},
+        ]
+
+        kept = drop_untagged_envelope_boxes(pieces)
+
+        self.assertEqual([piece["piece"] for piece in kept], [0])
+
+    def test_keeps_untagged_box_without_tagged_sibling(self):
+        pieces = [
+            {"stream": "JT", "piece": 0, "lsgPropertyKeys": HIDDEN_KEYS,
+             "meshes": [box_mesh()]},
+        ]
+
+        kept = drop_untagged_envelope_boxes(pieces)
+
+        self.assertEqual([piece["piece"] for piece in kept], [0])
+
+    def test_keeps_untagged_box_with_simplified_name(self):
+        pieces = [
+            {"stream": "JT", "piece": 0,
+             "lsgPropertyKeys": HIDDEN_KEYS | {"JT_PROP_SIMP_NAME"},
+             "meshes": [box_mesh()]},
+            {"stream": "JT", "piece": 1, "lsgPropertyKeys": BODY_KEYS,
+             "meshes": [cover_mesh()]},
+        ]
+
+        kept = drop_untagged_envelope_boxes(pieces)
+
+        self.assertEqual([piece["piece"] for piece in kept], [0, 1])
+
+    def test_tagged_sibling_in_other_stream_does_not_drop(self):
+        pieces = [
+            {"stream": "other/JT", "piece": 0, "lsgPropertyKeys": BODY_KEYS,
+             "meshes": [cover_mesh()]},
+            {"stream": "JT", "piece": 0, "lsgPropertyKeys": HIDDEN_KEYS,
+             "meshes": [box_mesh()]},
+        ]
+
+        kept = drop_untagged_envelope_boxes(pieces)
+
+        self.assertEqual(len(kept), 2)
 
 
 if __name__ == "__main__":

@@ -56,10 +56,11 @@ Verified against an NX writer ("Version 9.4 JT  DM 10.0.2.1"):
 |------|----------|
 | `container.py` | `Stream`, `open_prt`, `parse_splm`, `iter_jt_streams`, `jt_piece_bases`, `_ole_flat`, `_is_jt_candidate` |
 | `frames.py` | `JT_HEADER`, `TocEntry`, `_guid`, `_find_version_base`, `parse_jt`, `_guess_stride`, `JtFile`, `decompress_lehc`, `lzma_decompress`, `inflate_zlib_segments` |
-| `attributes.py` | `_find_rgba_alignment`, `parse_material_payload`, `read_lsg_attrs`, `split_lsg_elements`, `split_shape_element` |
+| `attributes.py` | `_find_rgba_alignment`, `parse_material_payload`, `read_lsg_attrs`, `lsg_property_keys`, `split_lsg_elements`, `split_shape_element` |
 | `scene.py` | Selects version 9 range-LOD scene graph branches and their shape segments |
 | `trimesh.py` | `_expand_cdp`, `corner_normal_ids`, `decode_trimesh`, `_decode_piece` (imports cdpx2/runmesh2/meshdec2) |
-| `extractor.py` | `extract_meshes` |
+| `geometry.py` | `is_axis_aligned_box` shared AABB predicate |
+| `extractor.py` | `extract_meshes`, `select_display_pieces`, `drop_untagged_envelope_boxes` |
 | `gltf_writer.py` | `write_gltf`, `_only_buffer_views`, `_gltf_json_ok` |
 | `cli.py` | `_main` |
 
@@ -74,3 +75,9 @@ detailed face sheets, and only the grid-cache copy aligned to the body is
 retained for display. That flat grid mesh is marked double-sided so it remains
 visible from either side. Without the whole-body mesh, the body-aligned copy
 is selected as a fallback.
+
+Streams that bind the `NXBodyAlgorithm` LSG property key on at least one piece
+also carry modelled box bodies that NX keeps hidden. `drop_untagged_envelope_boxes`
+removes a piece only when the stream is tagged, the piece has neither
+`NXBodyAlgorithm` nor `JT_PROP_SIMP_NAME`, and it decodes to exactly one
+axis-aligned box. The rule is per-stream, so proxy-only files are unchanged.

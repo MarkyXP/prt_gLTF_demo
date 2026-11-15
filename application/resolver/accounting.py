@@ -21,7 +21,8 @@ from threading import Lock
 ProgressCallback = Callable[[str, str], None]
 ArtifactCallback = Callable[[str, str, list[dict]], None]
 
-SKIP_STAT_KEYS = ("skipped_hidden", "dropped_translucent")
+SKIP_STAT_KEYS = ("skipped_hidden", "dropped_translucent",
+                  "dropped_undisplayed")
 
 
 class ConversionContext:

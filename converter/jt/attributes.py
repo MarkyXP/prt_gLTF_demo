@@ -16,6 +16,7 @@ import struct
 G_TID_LATE_LOADED = 'e55bb0e0bdfbd111a3a700aa00d10954'
 G_TID_MATERIAL = '3010dd10c82ad1119b6b0080c7bb5997'
 G_TID_PALETTE_MAP = '0611dd10c82ad1119b6b0080c7bb5997'
+G_TID_PROPERTY_KEY = '6e10dd10c82ad1119b6b0080c7bb5997'
 
 def _find_rgba_alignment(payload):
     """Find the float32 alignment with the most RGBA quads (r,g,b in [0,1], a==1)."""
@@ -125,6 +126,30 @@ def split_lsg_elements(lsg_raw):
                     'data': lsg_raw[off + 25:off + 4 + elen]})
         off += 4 + elen
     return els
+
+def lsg_property_keys(lsg_raw):
+    """Decode the UTF-16 property-key atoms bound in one inflated LSG stream.
+
+    Property key atoms carry a one-word metadata head, a U32 character count,
+    then the UTF-16LE key string. The same atom layout is referenced by the
+    LSG property table in ``scene._property_table``.
+
+    > example
+    > lsg_property_keys(inflated_lsg_bytes) ->
+    >   frozenset({'NXBodyAlgorithm', 'JT_LLPROP_SHAPEIMPL', ...})
+    """
+    keys = set()
+    for el in split_lsg_elements(lsg_raw):
+        if el.get('class') != G_TID_PROPERTY_KEY:
+            continue
+        data = el['data']
+        if len(data) < 12:
+            continue
+        count = struct.unpack_from('<i', data, 8)[0]
+        if count < 0 or 12 + 2 * count > len(data):
+            continue
+        keys.add(data[12:12 + 2 * count].decode('utf-16le', 'replace'))
+    return frozenset(keys)
 
 def split_shape_element(seg_body):
     """Shape/LOD0 segment body -> (framings, objdata thousands

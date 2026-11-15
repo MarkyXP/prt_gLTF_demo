@@ -29,7 +29,7 @@ from .accounting import (
     count_skip,
     publish_skip_counts,
 )
-from .display import paint_body_display
+from .display import drop_undisplayed_bodies, paint_body_display
 from ..geometry import is_proxy_collection, mark_proxy, mesh_collection
 from ..placement import placement_bundle, placement_families, placement_payload
 from ..reference_index import reference_basename
@@ -175,6 +175,13 @@ def _convert_part_path(path: str | Path, seen: set[str],
     step_started = time.perf_counter()
     jt_collection = mesh_collection(data, str(path))
     jt_ms = (time.perf_counter() - step_started) * 1000
+    jt_collection, dropped_undisplayed = drop_undisplayed_bodies(
+        str(path), jt_collection)
+    if dropped_undisplayed:
+        count_skip(context, "dropped_undisplayed", dropped_undisplayed)
+        LOGGER.info(
+            "part=%s step=jt result=dropped-undisplayed meshes=%d",
+            logical_name, dropped_undisplayed)
     jt_collection, dropped_transparent = paint_body_display(
         str(path), jt_collection)
     if dropped_transparent:

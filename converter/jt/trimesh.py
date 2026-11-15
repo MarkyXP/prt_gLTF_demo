@@ -22,7 +22,8 @@ if _CONVERTER_DIR not in sys.path:
 import cdpx2 as _cdpx2          # noqa: E402
 import runmesh2 as _rm2         # noqa: E402
 import meshdec2 as _md2         # noqa: E402
-from .attributes import read_lsg_attrs, split_shape_element
+from .attributes import (lsg_property_keys, read_lsg_attrs,
+                         split_shape_element)
 from .diagnostics import log_mesh_diagnostics
 from .frames import inflate_zlib_segments
 from .scene import selected_shape_segments
@@ -275,6 +276,7 @@ def _decode_piece(name, pi, base, jt):
     m = {'stream': name, 'piece': pi, 'base': base,
          'summary': jt.summary(), 'warnings': list(jt.warnings), 'meshes': []}
     inflate_cache = inflate_zlib_segments(jt)
+    property_keys = set()
     lod_segments = [seg for seg in jt.segments if seg.type in (6, 7, 8, 9)]
     selected = None
     if jt.header.version.startswith("Version 9."):
@@ -295,6 +297,7 @@ def _decode_piece(name, pi, base, jt):
                 m['lsgAttrs'] = read_lsg_attrs(
                     inflate_cache[seg_idx],
                     [bytes.fromhex(e.guid) for e in jt.toc])
+                property_keys.update(lsg_property_keys(inflate_cache[seg_idx]))
         if seg not in lod_segments:
             continue
         if seg.type in (6, 7, 8, 9):
@@ -311,6 +314,7 @@ def _decode_piece(name, pi, base, jt):
                                     'oid': el['oid']})
             except Exception as ex:
                 m['warnings'].append('lod0 decode failed: %s' % ex)
+    m['lsgPropertyKeys'] = frozenset(property_keys)
     if 'lsgAttrs' in m:
         la = m['lsgAttrs']
         customs = [mm for mm in la['materials']

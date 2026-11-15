@@ -1,4 +1,4 @@
-"""Body colour painting and fully-transparent body filtering.
+"""Body colour painting, display-state filtering, and transparent-body drops.
 
 Inputs:
   * A converted .prt path (display records are read from its bytes).
@@ -7,7 +7,12 @@ Inputs:
 Outputs:
   * The collection with the part's body colour and translucency alpha
     painted onto every mesh entry.
-  * The number of mesh entries dropped as unrenderable.
+  * The number of mesh entries dropped as undisplayed or unrenderable.
+
+Display-state filtering reads the per-body atom decoded by
+``converter/body_display.py`` and removes only JT pieces positively bound
+to a blanked/non-displayed NX body. Missing or ambiguous evidence keeps the
+geometry.
 
 Body colour and translucency come from the display records
 (converter/color_index.py + converter/palette.py). NX translucency is
@@ -158,6 +163,113 @@ def _match_body_bounds(collection, records):
         matches[key] = scores[0][1]
     counts = Counter(matches.values())
     return {key: index for key, index in matches.items() if counts[index] == 1}
+
+
+def drop_undisplayed_bodies(path: str,
+                            collection: list[dict]) -> tuple[list[dict], int]:
+    """Remove JT pieces positively bound to non-displayed NX bodies.
+
+    The part's object model marks bodies that NX does not display. Pieces
+    bind to those bodies by exact encoded bounds first; a legacy record may
+    store a B-rep envelope much larger than its facets, so an unmatched
+    hidden record may then claim the closest contained piece. Ambiguous or
+    missing evidence keeps the geometry.
+
+    > example
+    > drop_undisplayed_bodies("part.prt", collection)
+      -> (kept_collection, hidden_piece_count)
+    """
+    try:
+        from body_display import body_display_records
+        states = body_display_records(str(path))
+    except Exception:
+        LOGGER.exception("Failed to read body display state for %s", path)
+        return collection, 0
+    hidden_indexes = {
+        index for index, (_bounds, hidden) in enumerate(states) if hidden
+    }
+    if not hidden_indexes:
+        return collection, 0
+    records = [(index, None, bounds)
+               for index, (bounds, _hidden) in enumerate(states)]
+    exact = _match_body_bounds(collection, records) or {}
+    hidden_keys = {
+        key for key, index in exact.items() if index in hidden_indexes
+    }
+    unmatched_records = sorted(hidden_indexes - set(exact.values()))
+    if unmatched_records:
+        hidden_keys |= _match_envelope_bodies(
+            collection, records, unmatched_records, set(exact))
+    if not hidden_keys:
+        return collection, 0
+    kept = [
+        entry for entry in collection
+        if (entry.get("stream"), entry.get("jtPiece")) not in hidden_keys
+    ]
+    return kept, len(collection) - len(kept)
+
+
+def _match_envelope_bodies(collection: list[dict], records: list[tuple],
+                           record_indexes: list[int],
+                           taken_keys: set[tuple]) -> set[tuple]:
+    """Bind hidden B-rep envelopes to the closest contained, unclaimed piece.
+
+    A legacy record can encode a body envelope far larger than the faceted
+    body. Only an unclaimed piece fully inside the envelope is eligible, and
+    it must be clearly closer than every other candidate; otherwise nothing
+    is dropped.
+
+    > example
+    > _match_envelope_bodies(collection, records, [1], {("jt", 0)})
+      -> {("jt", 1)}
+    """
+    pieces = _piece_bounds(collection)
+    if not pieces:
+        return set()
+    candidates = []
+    for index in record_indexes:
+        envelope = records[index][2]
+        scored = []
+        for key, bounds in pieces.items():
+            if key in taken_keys or not _bounds_inside(bounds, envelope):
+                continue
+            diagonal = _bounds_diagonal(bounds)
+            distance = math.dist(bounds, envelope) / max(diagonal, 1.0e-9)
+            scored.append((distance, key, index))
+        scored.sort()
+        if not scored or scored[0][0] > 0.35:
+            continue
+        if len(scored) > 1 and scored[1][0] - scored[0][0] < 0.1:
+            continue
+        candidates.append(scored[0])
+    matched = set()
+    used_records = set()
+    for _distance, key, index in sorted(candidates):
+        if index in used_records or key in matched:
+            continue
+        matched.add(key)
+        used_records.add(index)
+    return matched
+
+
+def _bounds_inside(inner, outer) -> bool:
+    """Return whether one six-value bound tuple fits inside another.
+
+    > example
+    > _bounds_inside((0, 0, 0, 1, 1, 1), (-1, -1, -1, 2, 2, 2)) -> True
+    """
+    return all(inner[axis] >= outer[axis] - 1.0e-6
+               and inner[axis + 3] <= outer[axis + 3] + 1.0e-6
+               for axis in range(3))
+
+
+def _bounds_diagonal(bounds) -> float:
+    """Length of a six-value bound tuple's main diagonal.
+
+    > example
+    > _bounds_diagonal((0, 0, 0, 3, 4, 0)) -> 5.0
+    """
+    return math.dist(bounds[:3], bounds[3:])
 
 
 def _is_neutral_jt_colour(value) -> bool:
