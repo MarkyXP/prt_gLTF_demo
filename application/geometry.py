@@ -11,10 +11,136 @@ Outputs:
 """
 from __future__ import annotations
 
+import logging
 import math
 from pathlib import Path
 
 import prt_jt
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _piece_key(entry: dict) -> tuple:
+    """Return the stream/piece identity of one collection entry.
+
+    > example
+    > _piece_key({"stream": "jt", "jtPiece": 2}) -> ("jt", 2)
+    """
+    return (entry.get("stream"), entry.get("jtPiece"))
+
+
+def _is_decorated(entries: list[dict]) -> bool:
+    """Return whether a piece carries an NX face or body colour.
+
+    > example
+    > _is_decorated([{"color": [1, 0, 0]}]) -> True
+    """
+    return any(entry.get("colourSource") == "nx" or entry.get("color")
+               is not None for entry in entries)
+
+
+def _entry_bounds(entries: list[dict]):
+    """Combined bounds of one piece's mesh entries, or None.
+
+    > example
+    > _entry_bounds([{"t": {"pts": [(0, 0, 0), (1, 2, 3)]}}])
+    > -> (0, 0, 0, 1, 2, 3)
+    """
+    points = [point for entry in entries
+              for point in entry.get("t", {}).get("pts", [])]
+    if not points:
+        return None
+    return tuple(min(point[axis] for point in points) for axis in range(3)) + \
+        tuple(max(point[axis] for point in points) for axis in range(3))
+
+
+def _bounds_intersect(left, right) -> bool:
+    """Return whether two six-value bound tuples overlap on every axis.
+
+    > example
+    > _bounds_intersect((0, 0, 0, 1, 1, 1), (0.5, 0.5, 0.5, 2, 2, 2)) -> True
+    """
+    if left is None or right is None:
+        return False
+    return all(left[axis] <= right[axis + 3]
+               and right[axis] <= left[axis + 3] for axis in range(3))
+
+
+def overlay_colour_meshes(raw_collection: list[dict],
+                          coloured_collection: list[dict]) -> list[dict]:
+    """Overlay colour entries without dropping raw geometry unnecessarily.
+
+    Raw geometry is authoritative: an uncoloured raw piece keeps its own mesh
+    and normals.  A decorated piece replaces its raw counterpart only when it
+    actually carries a colour.  If a colour-bearing sheet was pruned from the
+    raw set, raw pieces overlapping that sheet are treated as an alternative
+    representation and superseded; unrelated raw pieces are kept.
+
+    > example
+    > raw = [{"stream": "jt", "jtPiece": 0, "t": {}}]
+    > deco = [{"stream": "jt", "jtPiece": 0, "t": {}, "color": [1, 0, 0]}]
+    > overlay_colour_meshes(raw, deco)[0]["color"] -> [1, 0, 0]
+    """
+    raw_order, raw_by_key = [], {}
+    for entry in raw_collection:
+        key = _piece_key(entry)
+        if key not in raw_by_key:
+            raw_order.append(key)
+        raw_by_key.setdefault(key, []).append(entry)
+
+    decorated_order, decorated_by_key = [], {}
+    for entry in coloured_collection:
+        key = _piece_key(entry)
+        if key not in decorated_by_key:
+            decorated_order.append(key)
+        decorated_by_key.setdefault(key, []).append(entry)
+
+    extra_coloured = [
+        key for key in decorated_order
+        if key not in raw_by_key and _is_decorated(decorated_by_key[key])
+    ]
+    superseded_bounds = []
+    for key in extra_coloured:
+        bounds = _entry_bounds(decorated_by_key[key])
+        if bounds is not None:
+            superseded_bounds.append(bounds)
+
+    result = []
+    suppressed = 0
+    for key in raw_order:
+        decorated = decorated_by_key.pop(key, None)
+        if decorated and _is_decorated(decorated):
+            result.extend(decorated)
+            continue
+        raw_entries = raw_by_key[key]
+        raw_bounds = _entry_bounds(raw_entries)
+        if any(_bounds_intersect(raw_bounds, bounds)
+               for bounds in superseded_bounds):
+            suppressed += len(raw_entries)
+            continue
+        result.extend(raw_entries)
+    for key in extra_coloured:
+        result.extend(decorated_by_key[key])
+    if suppressed:
+        LOGGER.warning(
+            "Colour overlay superseded %d raw piece(s) overlapping a "
+            "coloured display sheet", suppressed)
+
+    covered = {_piece_key(entry) for entry in result}
+    missing = [key for key in raw_order if key not in covered]
+    restored = 0
+    for key in missing:
+        raw_bounds = _entry_bounds(raw_by_key[key])
+        if any(_bounds_intersect(raw_bounds, bounds)
+               for bounds in superseded_bounds):
+            continue
+        result.extend(raw_by_key[key])
+        restored += 1
+    if restored:
+        LOGGER.warning(
+            "Colour overlay lost %d JT piece(s); restored raw geometry",
+            restored)
+    return result
 
 
 def mesh_collection(data: bytes, part_path=None) -> list[dict]:
@@ -24,14 +150,6 @@ def mesh_collection(data: bytes, part_path=None) -> list[dict]:
     > mesh_collection(part_bytes)
       -> [{"stream": name, "t": triangle mesh, "color": rgb or None}, ...]
     """
-    if part_path is not None and data[:4] == b"SPLM":
-        try:
-            from converter.face_colour import decorate_colour_mesh
-            coloured = decorate_colour_mesh(part_path)
-            if coloured:
-                return coloured
-        except Exception:
-            pass
     collection = []
     for mesh in prt_jt.extract_meshes(data):
         for triangle_mesh in mesh["meshes"]:
@@ -42,6 +160,14 @@ def mesh_collection(data: bytes, part_path=None) -> list[dict]:
                 "color": triangle_mesh.get("color"),
                 "doubleSided": triangle_mesh.get("doubleSided", False),
             })
+    if part_path is not None and data[:4] == b"SPLM":
+        try:
+            from converter.face_colour import decorate_colour_mesh
+            coloured = decorate_colour_mesh(part_path)
+            if coloured:
+                return overlay_colour_meshes(collection, coloured)
+        except Exception:
+            LOGGER.exception("Face colour decoration failed for %s", part_path)
     return collection
 
 

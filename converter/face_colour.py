@@ -1,4 +1,4 @@
-"""Decode NX per-face display colours and paint the matching display sheet.
+"""Decode NX per-face display colours and overlay them on every JT piece.
 
 ``UG_PART/UG_PART`` is a sequence of marker-headed records.  The marker heads
 the following body, whose colour token comes first.  A face body starts
@@ -6,8 +6,9 @@ the following body, whose colour token comes first.  A face body starts
 variant, identifies it.  Body colours use ``47 01 04 01 c0 44 04 00
 <palette> 02 <body_tag> 01 93 8e``.  Face colours win over the body palette,
 face ids rank within their body, and each JT piece is matched to a tag by its
-display vertex-group count (bounds break ties).  No NX calibration data is
-used at runtime.
+display vertex-group count (bounds break ties).  Pieces without a structural
+match keep their neutral colour; they are never dropped.  No NX calibration
+data is used at runtime.
 
 > example
 > decorate_colour_mesh("part.prt") -> [coloured mesh dicts] or None
@@ -24,14 +25,24 @@ for _path in (_ROOT_DIR, _CONVERTER_DIR):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-import meshdec2
-
 import prt_jt
 from color_index import body_colour_by_tag
-from converter.jt.attributes import split_shape_element
-from converter.jt.container import jt_piece_bases
-from converter.jt.frames import parse_jt
-from converter.jt.trimesh import decode_trimesh
+from converter.face_matching import (
+    assign_piece_tags,
+    choose_tag as _choose_tag,
+    effective_palettes as _effective_palettes,
+    face_group_mapping,
+    tag_signature as _tag_signature,
+)
+from converter.face_pieces import (
+    bounds_distance as _bounds_distance,
+    display_lod as _display_lod,
+    groups as _groups,
+    piece_bounds as _piece_bounds,
+    piece_infos,
+    piece_lods as _piece_lods,
+    primal as _primal,
+)
 from converter.palette import default_palette
 
 _FACE_SELECTOR = b"\x93\x8c"
@@ -159,159 +170,14 @@ def face_colour_blocks(part_path):
     return face_colour_rows_by_body(part_path)
 
 
-def face_group_mapping(rows):
-    """Map one body's face-group rank to palette for non-white rows.
-
-    ``rows`` is ``[(face_id, palette_or_None), ...]`` from a single body.  The
-    JT display group id is the ascending rank of the face id within that body.
-
-    > example
-    > face_group_mapping([(403, 186), (100, None), (200, 50)])
-    > -> {2: 186, 1: 50}
-    """
-    order = sorted(range(len(rows)), key=lambda index: rows[index][0])
-    rank = {index: position for position, index in enumerate(order)}
-    return {rank[index]: palette
-            for index, (_, palette) in enumerate(rows) if palette is not None}
-
-
-def _primal(mesh):
-    """Split a decoded mesh into primal triangles and their group ids.
-
-    > example
-    > _primal(mesh) -> ([triangle, ...], [group, ...])
-    """
-    face_mesh = mesh["fm"]
-    all_tris, _ = meshdec2.primal_from_dual(face_mesh)
-    keep = [tri for tri in range(len(all_tris)) if all_tris[tri] is not None]
-    return all_tris, keep
-
-
-def _piece_lods(jt_data):
-    """Decode the display LODs of every JT piece.
-
-    > example
-    > _piece_lods(jt_bytes) -> [{lod_type: (mesh, triangles, keep)}, ...]
-    """
-    pieces = []
-    for base in jt_piece_bases(jt_data):
-        jt = parse_jt(jt_data[base:] if base else jt_data)
-        segments = {segment.type: segment for segment in jt.segments
-                    if segment.type in (6, 7, 8, 9)}
-        lods = {}
-        for lod_type in ([7] if 7 in segments else sorted(segments)):
-            try:
-                mesh = decode_trimesh(
-                    split_shape_element(segments[lod_type].data)["objdata"])
-            except Exception:
-                continue
-            triangles, keep = _primal(mesh)
-            lods[lod_type] = (mesh, triangles, keep)
-        pieces.append(lods)
-    return pieces
-
-
-def _groups(mesh, keep):
-    """Distinct vertex-group ids used by the kept triangles of one LOD.
-    > example
-    > _groups(mesh, keep) -> {0, 1, ..., 21}
-    """
-    groups = {mesh["fm"].vtxGrp(tri) for tri in keep}
-    groups.discard(-1)
-    groups.discard(0xFFFFFFFF)
-    return groups
-
-
-def _display_lod(lods):
-    """Prefer the type-7 display sheet, else the LOD with the most groups.
-
-    > example
-    > _display_lod({6: lod6, 7: lod7}) -> lod7
-    """
-    if 7 in lods:
-        return lods[7]
-    return max(lods.values(), key=lambda lod: len(_groups(lod[0], lod[2])))
-
-
-def _piece_bounds(mesh, triangles, keep):
-    """Bounds of the vertices referenced by one LOD's kept triangles.
-
-    > example
-    > _piece_bounds(mesh, triangles, keep) -> (xmin, ymin, zmin, xmax, ymax, zmax)
-    """
-    points = [mesh["pts"][vertex] for tri in keep for vertex in triangles[tri]]
-    return tuple(min(point[axis] for point in points) for axis in range(3)) + \
-        tuple(max(point[axis] for point in points) for axis in range(3))
-
-
-def _bounds_distance(left, right):
-    """Manhattan distance between two six-value bound tuples.
-
-    > example
-    > _bounds_distance((0, 0, 0, 1, 1, 1), (0, 0, 0, 1, 1, 1)) -> 0
-    """
-    if left is None or right is None:
-        return float("inf")
-    return sum(abs(left[index] - right[index]) for index in range(6))
-
-
-def _effective_palettes(rows, body_palette):
-    """Per-group effective palette for one body: face override, else body.
-
-    > example
-    > _effective_palettes([(100, 97), (101, None)], 129) -> {0: 97, 1: 129}
-    """
-    mapping = face_group_mapping(rows)
-    return {group: mapping.get(group, body_palette)
-            for group in range(len(rows))}
-
-
-def _tag_signature(rows, body_palette):
-    """Comparable effective-colour signature for one body.
-
-    > example
-    > _tag_signature([(100, 97)], None) -> (((0, 97),), None)
-    """
-    return (tuple(sorted(face_group_mapping(rows).items())), body_palette)
-
-
-def _choose_tag(candidates, blocks, body_records, piece_bounds, used_tags):
-    """Pick one body tag for a piece from equal-group-count candidates.
-
-    > example
-    > _choose_tag([0x22, 0x23], blocks, records, bounds, set()) -> 0x22
-    """
-    if not candidates:
-        return None
-    unused = [tag for tag in candidates if tag not in used_tags]
-    if unused:
-        candidates = unused
-    if len(candidates) == 1:
-        return candidates[0]
-    with_bounds = [
-        tag for tag in candidates
-        if body_records.get(tag, {}).get("bounds") is not None
-    ]
-    if with_bounds:
-        return min(with_bounds, key=lambda tag: _bounds_distance(
-            piece_bounds, body_records[tag]["bounds"]))
-    signatures = {
-        _tag_signature(blocks[tag],
-                       body_records.get(tag, {}).get("palette"))
-        for tag in candidates
-    }
-    if len(signatures) == 1:
-        return sorted(candidates)[0]
-    return None
-
-
 def decorate_colour_mesh(part_path):
-    """Return coloured meshes for a part with per-face display colours.
+    """Overlay NX face and body colours on every decoded JT piece.
 
-    Returns None when the part has no face-colour rows, no non-white face or
-    body colour, or no display sheet whose vertex-group count matches a body
-    row count.  Each emitted mesh dict keeps its ``jtPiece`` and marks
-    ``colourSource`` as ``nx`` so body-colour fallbacks do not overwrite it.
+    Returns None when the part has no face-colour rows or no non-white face
+    or body colour.  Otherwise every decoded piece is emitted, including
+    pieces with no matching colour record.  Matched entries keep their
+    ``jtPiece`` and mark ``colourSource`` as ``nx`` so body-colour fallbacks do
+    not overwrite them.
 
     > example
     > decorate_colour_mesh("fascia.prt") -> [{"t": mesh, "color": rgb}, ...]
@@ -347,34 +213,47 @@ def decorate_colour_mesh(part_path):
     streams = prt_jt.open_prt(part_path)
     if "/Root/FastLoad/JT" not in streams:
         return None
-    lods_by_piece = _piece_lods(streams["/Root/FastLoad/JT"].data)
+    infos = piece_infos(_piece_lods(streams["/Root/FastLoad/JT"].data))
+    if not infos:
+        return None
 
+    assignments = assign_piece_tags(infos, blocks, body_records)
     collection = []
-    used_tags = set()
-    for piece, lods in enumerate(lods_by_piece):
-        if not lods:
+    for info in infos:
+        piece = info["piece"]
+        mesh = info["mesh"]
+        triangles = info["triangles"]
+        keep = info["keep"]
+        tag = assignments.get(piece)
+        rows = blocks.get(tag) if tag is not None else None
+        body_palette = (
+            body_records.get(tag, {}).get("palette")
+            if tag is not None else None)
+        if rows is not None and len(rows) == len(info["groups"]):
+            palettes = _effective_palettes(rows, body_palette)
+        elif body_palette is not None:
+            palettes = {group: body_palette for group in info["groups"]}
+        else:
+            palettes = {}
+        if not palettes:
+            collection.append({
+                "stream": "/Root/FastLoad/JT",
+                "jtPiece": piece,
+                "t": {"pts": mesh["pts"],
+                      "tris": [triangles[tri] for tri in keep],
+                      "npts": len(mesh["pts"]), "ntris": len(keep)},
+                "color": None,
+                "doubleSided": True,
+            })
             continue
-        mesh, triangles, keep = _display_lod(lods)
-        groups = _groups(mesh, keep)
-        candidates = [
-            tag for tag, rows in blocks.items() if len(rows) == len(groups)
-        ]
-        piece_bounds = _piece_bounds(mesh, triangles, keep)
-        tag = _choose_tag(
-            candidates, blocks, body_records, piece_bounds, used_tags)
-        if tag is None:
-            continue
-        used_tags.add(tag)
-        body_palette = body_records.get(tag, {}).get("palette")
-        palettes = _effective_palettes(blocks[tag], body_palette)
         by_colour = {}
         for tri in keep:
             palette = palettes.get(mesh["fm"].vtxGrp(tri))
             rgb = table.get(palette, _WHITE) if palette is not None else _WHITE
-            by_colour.setdefault(rgb, []).append(triangles[tri])
+            by_colour.setdefault(tuple(rgb), []).append(triangles[tri])
         for rgb, selected in by_colour.items():
             collection.append({
-                "stream": "FastLoad/JT",
+                "stream": "/Root/FastLoad/JT",
                 "jtPiece": piece,
                 "t": {"pts": mesh["pts"], "tris": selected,
                       "npts": len(mesh["pts"]), "ntris": len(selected)},
@@ -397,3 +276,4 @@ if __name__ == "__main__":
           "palette census", dict(sorted(census.items())))
     result = decorate_colour_mesh(sys.argv[1])
     print("colour meshes", 0 if result is None else len(result))
+
