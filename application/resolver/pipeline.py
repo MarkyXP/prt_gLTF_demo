@@ -31,10 +31,16 @@ from .accounting import (
 )
 from .display import drop_undisplayed_bodies, paint_body_display
 from ..geometry import is_proxy_collection, mark_proxy, mesh_collection
-from ..placement import placement_bundle, placement_families, placement_payload
+from ..placement import (
+    assembly_structure,
+    placement_bundle,
+    placement_families,
+    placement_payload,
+)
 from ..reference_index import reference_basename
 from ..references import find_named_part, meaningful_part_references, reference_roots
 from ..suppression import is_suppressed_child, suppressed_child_names
+from .status import append_assembly, record_rmfastload
 
 
 LOGGER = logging.getLogger(__name__)
@@ -175,6 +181,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
     step_started = time.perf_counter()
     jt_collection = mesh_collection(data, str(path))
     jt_ms = (time.perf_counter() - step_started) * 1000
+    record_rmfastload(resolution, logical_name, path, data, jt_collection)
     jt_collection, dropped_undisplayed = drop_undisplayed_bodies(
         str(path), jt_collection)
     if dropped_undisplayed:
@@ -235,6 +242,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
     skipped_hidden = []
     families = placement_families(data)
     om_payload = placement_payload(data)
+    structure = assembly_structure(data) if families else None
     resolved_meshes = {}
     resolved_paths = {}
 
@@ -296,6 +304,9 @@ def _convert_part_path(path: str | Path, seen: set[str],
             candidates, results):
         resolution["assemblies"].extend(
             child_resolution.get("assemblies", []))
+        if child_resolution.get("rmfastload"):
+            resolution.setdefault("rmfastload", []).extend(
+                child_resolution["rmfastload"])
         resolution["stash"].update(child_resolution.get("stash", {}))
         if not child:
             missing_names.append(ref_name)
@@ -330,20 +341,16 @@ def _convert_part_path(path: str | Path, seen: set[str],
     if families and resolved_meshes:
         bundle, pair_notes = placement_bundle(
             list(resolved_meshes), resolved_meshes, resolved_paths, families,
-            payload=om_payload)
+            payload=om_payload,
+            roster=(structure or {}).get("roster"),
+            extref_names=(structure or {}).get("extref_names"))
     else:
         bundle, pair_notes = None, []
     if bundle:
-        resolution["assemblies"].append({
-            "part": logical_name,
-            "references": ref_names,
-            "resolved": resolved_names,
-            "missing": missing_names,
-            "nested_missing": nested_missing,
-            "skipped_hidden": skipped_hidden,
-            "proxy_display": "placed-instances",
-            "pairing": pair_notes,
-        })
+        append_assembly(
+            resolution, logical_name, ref_names, resolved_names,
+            missing_names, nested_missing, skipped_hidden,
+            "placed-instances", pair_notes)
         return finish(bundle, includes_children=True)
 
     incomplete = bool(missing_names or nested_missing)
@@ -359,38 +366,21 @@ def _convert_part_path(path: str | Path, seen: set[str],
             if incomplete:
                 mark_proxy(collection, proxy_display)
                 referenced.extend(collection)
-            resolution["assemblies"].append({
-                "part": logical_name,
-                "references": ref_names,
-                "resolved": resolved_names,
-                "missing": missing_names,
-                "nested_missing": nested_missing,
-                "skipped_hidden": skipped_hidden,
-                "proxy_display": proxy_display,
-            })
+            append_assembly(
+                resolution, logical_name, ref_names, resolved_names,
+                missing_names, nested_missing, skipped_hidden,
+                proxy_display)
             return finish(referenced, includes_children=True)
         mark_proxy(collection, "placeholder")
-        resolution["assemblies"].append({
-            "part": logical_name,
-            "references": ref_names,
-            "resolved": [],
-            "missing": missing_names or ref_names,
-            "nested_missing": nested_missing,
-            "skipped_hidden": skipped_hidden,
-            "proxy_display": "placeholder",
-        })
+        append_assembly(
+            resolution, logical_name, ref_names, [],
+            missing_names or ref_names, nested_missing, skipped_hidden,
+            "placeholder")
         return finish(collection)
 
-    resolution["assemblies"].append({
-        "part": logical_name,
-        "references": ref_names,
-        "resolved": resolved_names,
-        "missing": missing_names,
-        "nested_missing": nested_missing,
-        "skipped_hidden": skipped_hidden,
-        "proxy_display": "no-proxy",
-        "pairing": pair_notes,
-    })
+    append_assembly(
+        resolution, logical_name, ref_names, resolved_names, missing_names,
+        nested_missing, skipped_hidden, "no-proxy", pair_notes)
     if referenced:
         return finish(referenced, includes_children=True)
     if primary is not None:

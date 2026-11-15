@@ -25,7 +25,10 @@ try:
         parent_stem_labels,
         placement_frames,
         placement_object_index,
+        placement_uuid,
+        prototype_name_join,
         structured_frames,
+        uuid_join,
     )
 except ImportError:  # repo root not importable on this sys.path
     from pairing import (
@@ -43,7 +46,10 @@ except ImportError:  # repo root not importable on this sys.path
         parent_stem_labels,
         placement_frames,
         placement_object_index,
+        placement_uuid,
+        prototype_name_join,
         structured_frames,
+        uuid_join,
     )
 
 __all__ = [
@@ -61,5 +67,8 @@ __all__ = [
     "parent_stem_labels",
     "placement_frames",
     "placement_object_index",
+    "placement_uuid",
+    "prototype_name_join",
     "structured_frames",
+    "uuid_join",
 ]

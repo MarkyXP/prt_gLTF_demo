@@ -134,6 +134,7 @@ def convert_to_glb(data: bytes, part_name: str | None = None,
         "dropped_translucent": resolution.get("dropped_translucent", 0),
         "dropped_undisplayed": resolution.get("dropped_undisplayed", 0),
         "colour_index": colour_index,
+        "rmfastload": resolution.get("rmfastload", []),
         "assemblies": summaries,
         "timings_ms": timings,
     }

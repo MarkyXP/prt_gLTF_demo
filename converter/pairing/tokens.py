@@ -23,6 +23,86 @@ CONNECTOR_WIDTH = 6
 CONNECTOR_PREFIX = 4
 CHILD_NAME_SCAN = 128
 CHILD_NAME_MAX = 120
+UUID_LENGTH = 36
+UUID_HYPHENS = (8, 13, 18, 23)
+
+
+def _is_canonical_uuid(text):
+    """Lowercase 8-4-4-4-12 hexadecimal UUID text.
+
+    > example
+    >>> _is_canonical_uuid("01234567-89ab-cdef-0123-456789abcdef")
+    True
+    >>> _is_canonical_uuid("bpsmel.GenuineInt.1.0.2.0")
+    False
+    """
+    if len(text) != UUID_LENGTH:
+        return False
+    for index, char in enumerate(text):
+        if index in UUID_HYPHENS:
+            if char != "-":
+                return False
+        elif char not in "0123456789abcdef":
+            return False
+    return True
+
+
+def _text_frame(data, position):
+    """One ``03, length:u8, ASCII[length-2], 00`` placement text frame.
+
+    > example
+    >>> _text_frame(b"\\x03\\x04ab\\x00", 0)
+    ('ab', 4)
+    """
+    if position + 4 > len(data) or data[position] != 0x03:
+        return None
+    length = data[position + 1]
+    if length < 2:
+        return None
+    size = length - 2
+    start = position + 2
+    end = start + size
+    if end >= len(data) or data[end] != 0:
+        return None
+    raw = data[start:end]
+    if any(byte < 0x20 or byte > 0x7E for byte in raw):
+        return None
+    return raw.decode("ascii"), end + 1
+
+
+def placement_uuid(data, frame):
+    """Canonical UUID frame following a complete placement frame.
+
+    The five-byte trailer must carry ``0xf0`` in its second byte; the label
+    frame follows, then the UUID frame. Non-canonical NX internal identity
+    strings (for example ``host.GenuineInt.N.0.N.0``) return ``None``.
+
+    > example
+    >>> frame = {"end": 4}
+    >>> data = (b"\\x00\\x00\\x00\\x01\\x00\\xf0\\x00\\x01\\x00"
+    ...         + b"\\x03\\x04ab\\x00"
+    ...         + b"\\x03\\x26" b"01234567-89ab-cdef-0123-456789abcdef" b"\\x00")
+    >>> placement_uuid(data, frame)
+    '01234567-89ab-cdef-0123-456789abcdef'
+    """
+    position = frame.get("end")
+    if position is None or position + 5 > len(data):
+        return None
+    trailer = data[position:position + 5]
+    if trailer[1] != 0xF0:
+        return None
+    position += 5
+    label = _text_frame(data, position)
+    if label is None:
+        return None
+    _, position = label
+    uuid = _text_frame(data, position)
+    if uuid is None:
+        return None
+    text, _ = uuid
+    if not _is_canonical_uuid(text):
+        return None
+    return text
 
 
 def _reference_index(data, offset, length):

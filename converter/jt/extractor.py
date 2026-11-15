@@ -8,16 +8,19 @@ Outputs:
     and LSG colour/material summary.
 """
 
+import logging
 import struct
 from .container import (OLE_MAGIC, _is_jt_candidate, _ole_flat,
                         iter_jt_streams, jt_piece_bases, open_prt,
                         parse_splm)
+from .display_jt import decode_display_jt
 from .frames import parse_jt
 from .geometry import is_axis_aligned_box
 from .trimesh import _decode_piece
 
 _BODY_ALGORITHM_KEY = "NXBodyAlgorithm"
 _SIMPLIFIED_NAME_KEY = "JT_PROP_SIMP_NAME"
+LOGGER = logging.getLogger(__name__)
 
 
 def drop_untagged_envelope_boxes(pieces):
@@ -262,6 +265,63 @@ def _center_distance(candidate_bounds, center, body_bounds):
         for axis, (low, high) in enumerate(candidate_bounds)
     )
 
+
+def _has_triangle_mesh(pieces):
+    """Return whether any piece carries decoded triangle geometry.
+
+    > example
+    > _has_triangle_mesh([{'meshes': [{'tris': [(0, 1, 2)]}]}]) -> True
+    """
+    return any(mesh.get("tris")
+               for piece in pieces for mesh in piece.get("meshes", []))
+
+
+def _display_jt_warning(stream_name, error):
+    """Build a meshless warning piece for a failed DisplayJT fallback.
+
+    > example
+    > _display_jt_warning('UG_PART/DisplayJT', ValueError('bad'))['meshes']
+    > -> []
+    """
+    return {"stream": stream_name, "piece": 0, "base": 0,
+            "summary": "DisplayJT unparsed",
+            "warnings": ["DisplayJT fallback failed: %s" % error],
+            "meshes": [], "source": "DisplayJT"}
+
+
+def apply_display_jt_fallback(pieces, display_streams):
+    """Append DisplayJT geometry only when the primary pieces hold none.
+
+    ``display_streams`` is a sequence of ``(name, bytes)`` pairs. A primary
+    stream with any decoded triangle wins unchanged, so the display cache
+    never duplicates working geometry. Malformed caches add a diagnostic
+    warning piece instead of raising.
+
+    > example
+    > apply_display_jt_fallback(primary, [('UG_PART/DisplayJT', b'...')])
+    > -> primary when it has triangles, otherwise DisplayJT pieces
+    """
+    if _has_triangle_mesh(pieces):
+        return pieces
+    diagnostics = []
+    for stream_name, data in display_streams:
+        try:
+            fallback = decode_display_jt(data, stream_name)
+        except Exception as error:
+            LOGGER.warning("DisplayJT fallback failed for %s: %s",
+                           stream_name, error)
+            diagnostics.append(_display_jt_warning(stream_name, error))
+            continue
+        if _has_triangle_mesh(fallback):
+            return list(pieces) + fallback
+        diagnostics.extend(
+            piece for piece in fallback
+            if piece.get("meshes") or piece.get("warnings"))
+        LOGGER.warning("DisplayJT fallback produced no triangles for %s",
+                       stream_name)
+    return list(pieces) + diagnostics
+
+
 def extract_meshes(x):
     """Extract decoded triangle meshes from one JT stream (bytes) or .prt path.
 
@@ -270,7 +330,8 @@ def extract_meshes(x):
     when the LOD0 element decoded. Independent accessories remain separate;
     redundant translated proxy copies are collapsed only when a precise body,
     a matching full-body tessellation, and an oversized coarse sheet identify
-    a family-cache layout.
+    a family-cache layout. When the primary streams yield no triangle mesh,
+    the indexed ``DisplayJT`` display cache is decoded as a fallback.
 
     > example
     > extract_meshes(open('part.prt', 'rb').read()) ->
@@ -294,9 +355,13 @@ def extract_meshes(x):
         else:
             streams = [('JT', blob)]
     meshes = []
+    display_streams = []
     for name, v in streams:
         data = v.data if hasattr(v, 'data') else v
-        if name.endswith('DisplayJT') or not _is_jt_candidate(data):
+        if name.endswith('DisplayJT'):
+            display_streams.append((name, data))
+            continue
+        if not _is_jt_candidate(data):
             continue
         bases = jt_piece_bases(data)
         if not bases:
@@ -311,4 +376,5 @@ def extract_meshes(x):
                 continue
             m = _decode_piece(name, pi, base, jt)
             meshes.append(m)
-    return select_display_pieces(meshes)
+    return apply_display_jt_fallback(select_display_pieces(meshes),
+                                     display_streams)

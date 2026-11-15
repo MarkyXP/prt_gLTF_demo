@@ -5,7 +5,8 @@ Inputs:
     + Annex-D symbol streams).
 
 Outputs:
-  * Mesh dictionaries with points, triangles, and corner normals.
+  * Mesh dictionaries with points, triangles, corner normals, and
+    per-corner vertex colours when the JT vertex record binds them.
 
 Uses cdpx2 (rep-data chain parse) + runmesh2 (vertex-record framing) +
 meshdec2 (Annex-D topology machine). The first mesh module import puts
@@ -73,13 +74,16 @@ def corner_normal_ids(fm, tris, slots):
     return ids
 
 
-def _reverse_triangle(triangles, corner_normals, triangle_index):
-    """Reverse one triangle and keep its corner normals attached.
+def _reverse_triangle(triangles, corner_normals, triangle_index,
+                      corner_colors=None):
+    """Reverse one triangle and keep its corner normals and colours attached.
 
     > example
     > triangles = [(0, 1, 2)]; normals = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]
     > _reverse_triangle(triangles, normals, 0); (triangles, normals)
     > -> ([(0, 2, 1)], [(1, 0, 0), (0, 0, 1), (0, 1, 0)])
+    > colours = ["a", "b", "c"]; _reverse_triangle(triangles, normals, 0, colours)
+    > colours -> ["a", "c", "b"]
     """
     a, b, c = triangles[triangle_index]
     triangles[triangle_index] = (a, c, b)
@@ -87,10 +91,17 @@ def _reverse_triangle(triangles, corner_normals, triangle_index):
     corner_normals[offset + 1], corner_normals[offset + 2] = (
         corner_normals[offset + 2], corner_normals[offset + 1]
     )
+    if corner_colors is not None:
+        corner_colors[offset + 1], corner_colors[offset + 2] = (
+            corner_colors[offset + 2], corner_colors[offset + 1]
+        )
 
 
-def _orient_mesh(points, triangles, corner_normals):
+def _orient_mesh(points, triangles, corner_normals, corner_colors=None):
     """Make triangle winding coherent and align corner normals to it.
+
+    When per-corner colours are supplied they are reordered alongside the
+    normals, preserving one lane per triangle corner.
 
     > example
     > _orient_mesh([(0, 0, 0), (1, 0, 0), (0, 1, 0)],
@@ -102,6 +113,9 @@ def _orient_mesh(points, triangles, corner_normals):
     """
     oriented_triangles = list(triangles)
     oriented_normals = list(corner_normals)
+    oriented_colors = (
+        list(corner_colors) if corner_colors is not None else None
+    )
 
     edge_uses = {}
     for triangle_index, triangle in enumerate(oriented_triangles):
@@ -141,7 +155,8 @@ def _orient_mesh(points, triangles, corner_normals):
 
     for triangle_index, should_flip in flips.items():
         if should_flip:
-            _reverse_triangle(oriented_triangles, oriented_normals, triangle_index)
+            _reverse_triangle(oriented_triangles, oriented_normals,
+                              triangle_index, oriented_colors)
 
     for component in components:
         agreement = 0.0
@@ -164,7 +179,8 @@ def _orient_mesh(points, triangles, corner_normals):
         if agreement < 0:
             for triangle_index in component:
                 _reverse_triangle(
-                    oriented_triangles, oriented_normals, triangle_index
+                    oriented_triangles, oriented_normals, triangle_index,
+                    oriented_colors
                 )
 
     for triangle_index, (a, b, c) in enumerate(oriented_triangles):
@@ -188,6 +204,8 @@ def _orient_mesh(points, triangles, corner_normals):
                 oriented_normals[offset + corner] = tuple(
                     -value for value in normal
                 )
+    if oriented_colors is not None:
+        return oriented_triangles, oriented_normals, oriented_colors
     return oriented_triangles, oriented_normals
 
 
@@ -228,47 +246,66 @@ def decode_trimesh(obj_bytes, diagnostic_label=""):
                     '<I', ((A[k][i] << 23) | (B[k][i] & 0x7FFFFF)) & 0xFFFFFFFF))[0]
                     for k in range(3)])
     norms = r.get('normals')
+    colors = r.get('colors')
     corner_n = None
-    if norms and slots:
+    corner_c = None
+    if (norms or colors) and slots:
         cn = corner_normal_ids(md.fm, tris, slots)
-        if cn and max(cn.values()) < len(norms):
+        if norms and cn and max(cn.values()) < len(norms):
             corner_n = [tuple(norms[cn[(t, k)]])
                         for t in range(len(tris)) for k in range(3)]
-            if pts:
-                metadata = {
-                    key: r.get(key)
-                    for key in (
-                        "repVer", "coordCount", "nTopoVerts", "normalCount",
-                        "nVtxAttr", "normalComp", "normalQuantBits",
-                        "coordQuant", "coordHash",
-                    )
-                }
-                log_mesh_diagnostics(
-                    pts, tris, corner_n, diagnostic_label,
-                    coord_cdp=r.get("coordCdp"), metadata=metadata,
-                    stage="raw", topology=md.fm, corner_slots=slots,
-                    normal_record_ids=cn,
-                    normal_cdp=(r.get("normalCdp")
-                                or r.get("deeringCdp")),
+        if colors and cn and max(cn.values()) < len(colors):
+            corner_c = [tuple(colors[cn[(t, k)]])
+                        for t in range(len(tris)) for k in range(3)]
+        if pts and corner_n:
+            metadata = {
+                key: r.get(key)
+                for key in (
+                    "repVer", "coordCount", "nTopoVerts", "normalCount",
+                    "nVtxAttr", "normalComp", "normalQuantBits",
+                    "coordQuant", "coordHash", "colorCount", "colorHash",
                 )
-                raw_tris = tris
-                raw_corner_normals = corner_n
+            }
+            if colors is not None:
+                metadata["colorCount"] = len(colors)
+            log_mesh_diagnostics(
+                pts, tris, corner_n, diagnostic_label,
+                coord_cdp=r.get("coordCdp"), metadata=metadata,
+                stage="raw", topology=md.fm, corner_slots=slots,
+                normal_record_ids=cn,
+                normal_cdp=(r.get("normalCdp")
+                            or r.get("deeringCdp")),
+            )
+            raw_tris = tris
+            raw_corner_normals = corner_n
+            raw_corner_colors = corner_c
+            if corner_c is not None:
+                tris, corner_n, corner_c = _orient_mesh(
+                    pts, tris, corner_n, corner_c)
+            else:
                 tris, corner_n = _orient_mesh(pts, tris, corner_n)
-                oriented_metadata = dict(metadata)
-                oriented_metadata["triangles_reoriented"] = sum(
-                    before != after for before, after in zip(raw_tris, tris)
-                )
-                oriented_metadata["corner_normals_changed"] = sum(
+            oriented_metadata = dict(metadata)
+            oriented_metadata["triangles_reoriented"] = sum(
+                before != after for before, after in zip(raw_tris, tris)
+            )
+            oriented_metadata["corner_normals_changed"] = sum(
+                before != after
+                for before, after in zip(raw_corner_normals, corner_n)
+            )
+            if corner_c is not None:
+                oriented_metadata["corner_colors_changed"] = sum(
                     before != after
-                    for before, after in zip(raw_corner_normals, corner_n)
+                    for before, after in zip(raw_corner_colors, corner_c)
                 )
-                log_mesh_diagnostics(
-                    pts, tris, corner_n, diagnostic_label,
-                    coord_cdp=r.get("coordCdp"), metadata=oriented_metadata,
-                    stage="oriented",
-                )
+            log_mesh_diagnostics(
+                pts, tris, corner_n, diagnostic_label,
+                coord_cdp=r.get("coordCdp"), metadata=oriented_metadata,
+                stage="oriented",
+            )
     return {'pts': pts, 'tris': tris, 'fm': md.fm, 'slots': slots,
             'cornerNormals': corner_n, 'normals': norms,
+            'colors': colors, 'cornerColors': corner_c,
+            'colorHash': r.get('colorHash'),
             'nFaceAttr': r['nVtxAttr'], 'hash': r.get('hash'),
             'npts': len(pts), 'ntris': len(tris)}
 
@@ -311,6 +348,9 @@ def _decode_piece(name, pi, base, jt):
                 m['meshes'].append({'pts': t['pts'], 'tris': t['tris'],
                                     'npts': t['npts'], 'ntris': t['ntris'],
                                     'cornerNormals': t['cornerNormals'],
+                                    'colors': t.get('colors'),
+                                    'cornerColors': t.get('cornerColors'),
+                                    'colorHash': t.get('colorHash'),
                                     'oid': el['oid']})
             except Exception as ex:
                 m['warnings'].append('lod0 decode failed: %s' % ex)
@@ -319,8 +359,11 @@ def _decode_piece(name, pi, base, jt):
         la = m['lsgAttrs']
         customs = [mm for mm in la['materials']
                    if mm.get('diffuse') is not None]
-        m['material'] = customs[0]['diffuse'] if customs else None
+        selected = customs[0] if customs else None
+        m['material'] = selected['diffuse'] if selected else None
+        m['materialAttributes'] = selected
         m['paletteMap'] = la['paletteMap']
         for mesh in m['meshes']:
             mesh['color'] = m['material']
+            mesh['material'] = selected
     return m

@@ -6,7 +6,8 @@ Inputs:
 
 Outputs:
   * Everything decoded from the rep-data chain (symbol arrays, coords,
-    normals, aux attribute packs).
+    normals, colours, texture-coordinate channels, vertex flags, aux
+    attribute packs).
   * Annex-D machine results, primal triangles, and mesh statistics.
 
 Normal decode verified (qb==0 -> JTBase_Tools::Combine with HI = first
@@ -19,6 +20,7 @@ import math
 import struct
 from cdpx2 import parse_cdp, lag1
 import meshdec2
+from jt.vertex_arrays import decode_color_array, decode_texture_array
 
 U32M = 0xFFFFFFFF
 
@@ -97,7 +99,11 @@ def load_lod0_obj(d, dbg=False):
     4-primer prefix-sum, while bits==0 uses the A/B per-axis pair with
     the float-combine. Deering normals (quantBits != 0) are produced by
     deering_vec from one shared sextant CDP plus octant/theta/psi CDPs.
-    Aux fields follow when bindings3 bit 63 is set.
+    When bindings2 selects them, colour (0x30), texture channels
+    (0xf << (8 + 4*channel)), and vertex flags (0x40) follow in that
+    order; aux fields follow when bindings3 bit 63 is set. A malformed
+    colour or texture array stops the walk before the tail because its
+    offset is unknown, while the already-decoded geometry stays usable.
 
     > example
     > r = load_lod0_obj(lod0_obj_bytes) -> dict with 'fd', 'val',
@@ -197,83 +203,118 @@ def load_lod0_obj(d, dbg=False):
                         for k in range(ncomp)])
             r['coords'] = pts
     if nva > 0:
+        tail_ok = True
         try:
-            nc = pos
-            cn = struct.unpack_from('<i', d, nc)[0]
-            ncmpn = d[nc + 4]
-            nbq = d[nc + 5]
-            r['normalCount'], r['normalComp'], r['normalQuantBits'] = cn, ncmpn, nbq
-            pos = nc + 6
-            if nbq == 0:
-                nc_ = []
-                for k in range(2 * ncmpn):
-                    vals, pos = parse_cdp(d, pos, 'n%d' % k)
-                    nc_.append(vals)
-                r['normalCdp'] = nc_
-                r['normalHash'] = struct.unpack_from('<I', d, pos)[0]
-                pos += 4
-                nv = []
-                for i in range(cn):
-                    p = []
-                    for k in range(ncmpn):
-                        A = nc_[2 * k]
-                        B = nc_[2 * k + 1]
-                        a = (A[i] << 23) & U32M
-                        b = B[i] & 0x7FFFFF
-                        v = struct.unpack('<f', struct.pack('<I', a | b))[0]
-                        p.append(_nclean(v))
-                    nv.append(p)
-                r['normals'] = nv
-            else:
-                ncd_ = []
-                for k in range(4):
-                    vals, pos = parse_cdp(d, pos, 'dn%d' % k)
-                    ncd_.append(vals)
-                r['deeringCdp'] = ncd_
-                r['normalHash'] = struct.unpack_from('<I', d, pos)[0]
-                pos += 4
-                nv = []
-                S, O, T, P = ncd_[:4]
-                for i in range(cn):
-                    nv.append(deering_vec(S[i], O[i], T[i], P[i], nbq))
-                r['normals'] = nv
-            if r['bindings2'] & 0x40:
+            if r['bindings2'] & 0x8:
+                nc = pos
+                cn = struct.unpack_from('<i', d, nc)[0]
+                ncmpn = d[nc + 4]
+                nbq = d[nc + 5]
+                r['normalCount'], r['normalComp'] = cn, ncmpn
+                r['normalQuantBits'] = nbq
+                pos = nc + 6
+                if nbq == 0:
+                    nc_ = []
+                    for k in range(2 * ncmpn):
+                        vals, pos = parse_cdp(d, pos, 'n%d' % k)
+                        nc_.append(vals)
+                    r['normalCdp'] = nc_
+                    r['normalHash'] = struct.unpack_from('<I', d, pos)[0]
+                    pos += 4
+                    nv = []
+                    for i in range(cn):
+                        p = []
+                        for k in range(ncmpn):
+                            A = nc_[2 * k]
+                            B = nc_[2 * k + 1]
+                            a = (A[i] << 23) & U32M
+                            b = B[i] & 0x7FFFFF
+                            v = struct.unpack(
+                                '<f', struct.pack('<I', a | b))[0]
+                            p.append(_nclean(v))
+                        nv.append(p)
+                    r['normals'] = nv
+                else:
+                    ncd_ = []
+                    for k in range(4):
+                        vals, pos = parse_cdp(d, pos, 'dn%d' % k)
+                        ncd_.append(vals)
+                    r['deeringCdp'] = ncd_
+                    r['normalHash'] = struct.unpack_from('<I', d, pos)[0]
+                    pos += 4
+                    nv = []
+                    S, O, T, P = ncd_[:4]
+                    for i in range(cn):
+                        nv.append(deering_vec(S[i], O[i], T[i], P[i], nbq))
+                    r['normals'] = nv
+            if r['bindings2'] & 0x30:
+                try:
+                    colors, color_hash, pos = decode_color_array(
+                        d, pos, nva, r['quant'][3])
+                except Exception as ex:
+                    r['vtxAttrError'] = 'colour array: %s' % ex
+                    tail_ok = False
+                else:
+                    r['colors'] = colors
+                    r['colorHash'] = color_hash
+            texture_channels = []
+            for channel in range(8):
+                if not (r['bindings2'] & (0xf << (8 + 4 * channel))):
+                    continue
+                if not tail_ok:
+                    break
+                try:
+                    values, tex_hash, pos = decode_texture_array(
+                        d, pos, nva, r['quant'][2])
+                except Exception as ex:
+                    r['vtxAttrError'] = ('texture channel %d: %s'
+                                         % (channel, ex))
+                    tail_ok = False
+                    break
+                texture_channels.append({'channel': channel,
+                                         'values': values,
+                                         'hash': tex_hash})
+            if texture_channels:
+                r['textureChannels'] = texture_channels
+            if tail_ok and r['bindings2'] & 0x40:
                 nf = struct.unpack_from('<i', d, pos)[0]
                 r['flagCount'] = nf
                 fl_, pos = parse_cdp(d, pos + 4, 'flags')
                 r['flags'] = fl_
         except Exception as ex:
             r['vtxAttrError'] = str(ex)
-        try:
-            r['tailVer'] = struct.unpack_from('<H', d, pos)[0]
-            pos += 2
-            b3 = struct.unpack_from('<Q', d, pos)[0]
-            pos += 8
-            r['bindings3'] = b3
-            aux = []
-            if b3 >> 63:
-                n = struct.unpack_from('<i', d, pos)[0]
-                pos += 4
-                for k in range(n):
-                    f = {'guid': d[pos:pos + 16].hex()}
-                    pos += 16
-                    f['type'] = d[pos]
-                    f['unused'] = d[pos + 1]
-                    pos += 2
-                    cnt = _aux_count_from_type(f['type'])
-                    paks = []
-                    for j in range(cnt):
-                        vals, pos = parse_cdp(d, pos, 'aux%d_%d' % (k, j))
-                        paks.append(vals)
-                        vals2, pos = parse_cdp(d, pos, 'auxB%d_%d' % (k, j))
-                        paks.append(vals2)
-                    f['cdp'] = paks
-                    f['hash'] = struct.unpack_from('<I', d, pos)[0]
+            tail_ok = False
+        if tail_ok:
+            try:
+                r['tailVer'] = struct.unpack_from('<H', d, pos)[0]
+                pos += 2
+                b3 = struct.unpack_from('<Q', d, pos)[0]
+                pos += 8
+                r['bindings3'] = b3
+                aux = []
+                if b3 >> 63:
+                    n = struct.unpack_from('<i', d, pos)[0]
                     pos += 4
-                    aux.append(f)
-            r['aux'] = aux
-        except Exception as ex:
-            r['tailError'] = str(ex)
+                    for k in range(n):
+                        f = {'guid': d[pos:pos + 16].hex()}
+                        pos += 16
+                        f['type'] = d[pos]
+                        f['unused'] = d[pos + 1]
+                        pos += 2
+                        cnt = _aux_count_from_type(f['type'])
+                        paks = []
+                        for j in range(cnt):
+                            vals, pos = parse_cdp(d, pos, 'aux%d_%d' % (k, j))
+                            paks.append(vals)
+                            vals2, pos = parse_cdp(d, pos, 'auxB%d_%d' % (k, j))
+                            paks.append(vals2)
+                        f['cdp'] = paks
+                        f['hash'] = struct.unpack_from('<I', d, pos)[0]
+                        pos += 4
+                        aux.append(f)
+                r['aux'] = aux
+            except Exception as ex:
+                r['tailError'] = str(ex)
     r['end'] = pos
     return r
 

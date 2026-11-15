@@ -57,10 +57,13 @@ Verified against an NX writer ("Version 9.4 JT  DM 10.0.2.1"):
 | `container.py` | `Stream`, `open_prt`, `parse_splm`, `iter_jt_streams`, `jt_piece_bases`, `_ole_flat`, `_is_jt_candidate` |
 | `frames.py` | `JT_HEADER`, `TocEntry`, `_guid`, `_find_version_base`, `parse_jt`, `_guess_stride`, `JtFile`, `decompress_lehc`, `lzma_decompress`, `inflate_zlib_segments` |
 | `attributes.py` | `_find_rgba_alignment`, `parse_material_payload`, `read_lsg_attrs`, `lsg_property_keys`, `split_lsg_elements`, `split_shape_element` |
+| `display_jt.py` | `parse_display_jt_index`, `display_jt_documents`, `decode_display_jt`, `scene_limitation_warnings` |
+| `materials.py` | Exact JT 9 v1/v2 material body parsing, inhibit/blend flags, bounded prefix search |
 | `scene.py` | Selects version 9 range-LOD scene graph branches and their shape segments |
 | `trimesh.py` | `_expand_cdp`, `corner_normal_ids`, `decode_trimesh`, `_decode_piece` (imports cdpx2/runmesh2/meshdec2) |
 | `geometry.py` | `is_axis_aligned_box` shared AABB predicate |
-| `extractor.py` | `extract_meshes`, `select_display_pieces`, `drop_untagged_envelope_boxes` |
+| `extractor.py` | `extract_meshes`, `select_display_pieces`, `drop_untagged_envelope_boxes`, `apply_display_jt_fallback` |
+| `gltf_materials.py` | Maps full JT materials to glTF base colour, emission, roughness, and alpha state |
 | `gltf_writer.py` | `write_gltf`, `_only_buffer_views`, `_gltf_json_ok` |
 | `cli.py` | `_main` |
 
@@ -75,6 +78,31 @@ detailed face sheets, and only the grid-cache copy aligned to the body is
 retained for display. That flat grid mesh is marked double-sided so it remains
 visible from either side. Without the whole-body mesh, the body-aligned copy
 is selected as a fallback.
+
+## DisplayJT fallback
+
+`/Root/UG_PART/DisplayJT` is the indexed display cache. Two writer layouts are
+accepted:
+
+* The documented index: `version:u32 LE`, `count:u32 LE`, then `count` rows of
+  `value:word_swapped_u64, header_offset:word_swapped_u64`, where
+  `integer = u32_le(first_word) << 32 | u32_le(second_word)`. Row values are
+  nonzero, header offsets fit `u32`, follow the complete row table, strictly
+  increase, and address an ASCII `Version ` header.
+* The older embedded-JT piece table that some NX writers store in the same
+  stream (the compact OLE and legacy SPLM forms handled by `jt_piece_bases`).
+
+Each document is decoded with `_decode_piece`, so colours, UV framing,
+materials, and supported range-LOD selection are identical to the primary
+stream. Duplicate header offsets and identical decoded meshes are collapsed.
+The cache is used only when no primary FastLoad/JT or UG_PART/JT stream
+produced a triangle mesh, so working primary geometry is never duplicated.
+Malformed caches add a warning instead of raising.
+
+Instance nodes and geometric-transform attributes are reported as identity
+placement rather than silently invented: only the supported range-LOD/group
+hierarchy is applied.
+
 
 Streams that bind the `NXBodyAlgorithm` LSG property key on at least one piece
 also carry modelled box bodies that NX keeps hidden. `drop_untagged_envelope_boxes`

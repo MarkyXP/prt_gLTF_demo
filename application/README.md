@@ -54,5 +54,15 @@ resolution dict, which `conversion.py` surfaces as
 in `X-Conversion-Stats`. Baseline parts carry no suppressed children and no
 100%-translucent bodies, so baseline byte output is unchanged.
 
+## RMFastLoad membership diagnostics
+
+`pipeline.py` parses `/Root/FastLoad/RMFastLoad` through
+`converter/rmfastload/` and records per-part membership counts and identifier
+overlaps in `resolution["rmfastload"]` (surfaced as the `rmfastload` stats
+key). The membership ids are Parasolid FACE/EDGE/VERTEX node ids; direct-JT
+pieces expose only JT shape/scene object ids, so no structural join exists
+and the display/suppression selection is unchanged. The parser and the
+complete-set subset selector are ready for a future topology-backed path.
+
 Progress reporting: `pipeline.py` emits the `started` progress event per
 part, which `web.py` maps to the job's `current` part shown by the viewer.

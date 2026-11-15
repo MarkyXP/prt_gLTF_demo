@@ -26,11 +26,13 @@ from .frames import (
     placement_frames,
 )
 from .labels import NAME_ROW_SCAN, match_stem, parent_stem_labels
+from .roster_join import prototype_name_join, uuid_join
 from .tokens import (
     CONNECTOR_PREFIX,
     CONNECTOR_WIDTH,
     connector_id,
     placement_object_index,
+    placement_uuid,
 )
 
 __all__ = [
@@ -48,5 +50,8 @@ __all__ = [
     "parent_stem_labels",
     "placement_frames",
     "placement_object_index",
+    "placement_uuid",
+    "prototype_name_join",
     "structured_frames",
+    "uuid_join",
 ]

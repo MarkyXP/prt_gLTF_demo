@@ -41,5 +41,17 @@ h1 { font-size: 1.05rem; margin: 0; }
 #opacity-value { margin-left: auto; color: #9a9; min-width: 2.5em;
                  text-align: right; }
 #display-style input[type="range"] { width: 100%; }
+#part-info { display: flex; flex-direction: column; gap: .4rem; padding: .5rem;
+             border: 1px solid #2a2a2a; border-radius: .4rem; background: #141414;
+             font-size: .8rem; max-height: 22rem; overflow: auto; }
+#part-info[hidden] { display: none; }
+#part-info .pi-title { font-weight: 600; color: #fff; }
+#part-preview { width: 100%; max-height: 9rem; object-fit: contain;
+                background: #0f0f0f; border: 1px solid #262626;
+                border-radius: .3rem; }
+#part-preview-dims { color: #9a9; font-size: .75rem; }
+#part-attributes { display: flex; flex-direction: column; gap: .15rem; }
+#part-attributes .attr { color: #bbb; word-break: break-word; }
+#part-attributes .attr .key { color: #ddd; }
 canvas { display: block; }
 noscript, .warn { color: #a86; }

@@ -7,15 +7,20 @@ Inputs:
     skipping conversion.
   * ``python app.py render part.gltf [options]`` — render an existing glTF
     (and its sibling .bin/textures) without conversion.
+  * ``python app.py info part.prt [--json] [--preview-out PATH]`` — show the
+    embedded JPEG preview, attributes, and arrangements.
 
 Outputs:
   * A ``.gltf`` and ``.bin`` pair by default.
   * A single ``.glb`` when the destination ends in ``.glb``.
   * A ``.png`` screenshot when using the render subcommand.
+  * Part metadata as text or JSON, and optionally a saved JPEG preview.
 """
 from __future__ import annotations
 
+import base64
 import http.server
+import json
 import socketserver
 import sys
 import tempfile
@@ -27,6 +32,7 @@ from urllib.parse import quote, urlencode
 
 from . import config as _config  # noqa: F401
 from .conversion import convert_to_files, convert_to_glb
+from .part_info import read_part_info
 from .reference_index import initialize_reference_index
 
 
@@ -230,6 +236,89 @@ def _cmd_render(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_info(argv: list[str]) -> int:
+    """Handle the info subcommand.
+
+    Usage: python app.py info part.prt [--json] [--preview-out PATH]
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="app.py info",
+        description="Show the embedded preview and attributes of a .prt")
+    parser.add_argument("source", help="Input .prt file")
+    parser.add_argument("--json", action="store_true",
+                        help="Print metadata as JSON")
+    parser.add_argument("--preview-out", metavar="PATH",
+                        help="Write the embedded JPEG preview to PATH")
+    args = parser.parse_args(argv[2:])
+
+    source_path = Path(args.source)
+    if not source_path.is_file():
+        print("input file not found: %s" % args.source)
+        return 2
+
+    info = read_part_info(source_path)
+    preview = info.get("preview")
+    notice = sys.stderr if args.json else sys.stdout
+
+    if args.preview_out:
+        if preview is None:
+            print("no preview available", file=notice)
+        else:
+            preview_path = Path(args.preview_out)
+            preview_path.parent.mkdir(parents=True, exist_ok=True)
+            preview_path.write_bytes(preview["data"])
+            print("wrote preview %s (%d B)"
+                  % (preview_path, preview["byte_size"]), file=notice)
+
+    if args.json:
+        payload = {
+            "file": source_path.name,
+            "attributes": info.get("attributes", []),
+            "preview": None,
+            "arrangements": info.get("arrangements", []),
+            "references": info.get("references", []),
+        }
+        if preview is not None:
+            payload["preview"] = {
+                "media_type": preview["media_type"],
+                "width": preview["width"],
+                "height": preview["height"],
+                "byte_size": preview["byte_size"],
+                "data_base64": base64.b64encode(
+                    preview["data"]).decode("ascii"),
+            }
+        if "units" in info:
+            payload["units"] = info["units"]
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    print(source_path.name)
+    if preview is None:
+        print("preview: none")
+    else:
+        print("preview: %dx%d, %d B, %s"
+              % (preview["width"], preview["height"],
+                 preview["byte_size"], preview["media_type"]))
+    arrangements = info.get("arrangements") or []
+    if arrangements:
+        rendered = ", ".join(
+            item["name"] + (" (default)" if item["default"] else "")
+            for item in arrangements)
+        print("arrangements: %s" % rendered)
+    references = info.get("references") or []
+    if references:
+        rendered = ", ".join(
+            item["name"]
+            + (" [%s]" % item["directory"] if item.get("directory") else "")
+            for item in references)
+        print("references: %s" % rendered)
+    for attribute in info.get("attributes", []):
+        print("%s = %s" % (attribute["title"], attribute["value"]))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI and return a process exit code.
 
@@ -238,6 +327,8 @@ def main(argv: list[str] | None = None) -> int:
       -> 0 after writing cap.glb
     > main(["app.py", "render", "cap.prt", "--camera", "4,3,6,0,0,0", "--output", "cap.png"])
       -> 0 after writing cap.png
+    > main(["app.py", "info", "cap.prt", "--json"])
+      -> 0 after printing the part metadata as JSON
     """
     argv = sys.argv if argv is None else argv
     if len(argv) < 2 or argv[1] in ("-h", "--help", "help"):
@@ -247,6 +338,8 @@ def main(argv: list[str] | None = None) -> int:
     subcommand = argv[1]
     if subcommand == "render":
         return _cmd_render(argv)
+    elif subcommand == "info":
+        return _cmd_info(argv)
     else:
         # Default: convert
         return _cmd_convert(argv)

@@ -18,6 +18,9 @@ from __future__ import annotations
 import itertools
 import math
 
+from .names import family_name_matches_child
+from .roster_join import prototype_name_join, uuid_join
+
 
 def _rotated_bbox_extent(rotation, extent):
     """AABB extent of one rotated box (per-axis half-span sum, >= 0)."""
@@ -99,47 +102,22 @@ def _child_fits_family(family, extent):
     return True
 
 
-def _family_name_matches_child(family_key, stem):
-    """Whether a stored occurrence name identifies one child prototype.
-
-    Some NX occurrence labels omit the numeric suffix added to the saved
-    child filename (for example, ``bearing`` vs ``bearing128.prt``).
-
-    > example
-    >>> _family_name_matches_child(
-    ...     ("name", "LBS000317_CONCENTRIC_BEARING"),
-    ...     "LBS000317_concentric_bearing128.prt")
-    True
-    >>> _family_name_matches_child(("name", "part"), r"C:\\parts\\part12.prt")
-    True
-    >>> _family_name_matches_child(("conn", b"abcd"), "bearing.prt")
-    False
-    """
-    if not isinstance(family_key, tuple) or len(family_key) != 2:
-        return False
-    kind, label = family_key
-    if kind != "name" or not isinstance(label, str):
-        return False
-    child = str(stem).replace("\\", "/").rsplit("/", 1)[-1]
-    if child.casefold().endswith(".prt"):
-        child = child[:-4]
-    label = label.casefold()
-    child = child.casefold()
-    suffix = child[len(label):] if child.startswith(label) else None
-    return suffix == "" or bool(suffix and suffix.isdigit())
-
-
-def pair_instances(families, child_extents):
+def pair_instances(families, child_extents, roster=None, extref_names=()):
     """Bind each component-master family onto one resolved child file.
 
     ``families``       ``[(key, [frame, ...]), ...]``.
     ``child_extents``  ``[(stem, extent), ...]`` per eligible child file,
                        extent ``(dx, dy, dz)`` in the part's payload units
                        (millimetres here), from the child's own meshes.
+    ``roster``         optional FastLoad component roster.
+    ``extref_names``   optional exact EXTREF child names for the unique
+                       placement-UUID/prototype join.
 
-    Name-backed families first bind to a unique matching child filename,
-    allowing the numeric suffix commonly added to saved prototype names.
-    Remaining families use a deterministic geometric join:
+    A unique placement UUID -> roster prototype -> EXTREF child join binds
+    first when the roster is present. Name-backed families then bind to a
+    unique matching child filename, allowing the numeric suffix commonly
+    added to saved prototype names. Remaining families use a deterministic
+    geometric join:
       1. every family loses children its packing can't host
          (``_child_fits_family`` / ``_intra_family_feasible`` only),
       2. when surviving candidates still overlap, families pair
@@ -192,10 +170,28 @@ def pair_instances(families, child_extents):
             notes.append("%s: no feasible child" % (key,))
 
     assignments = {}
+    roster_has_data = bool(roster and (roster.get("prototypes")
+                                       or roster.get("uuids")))
+    if roster_has_data:
+        joined, join_notes = uuid_join(
+            families, roster, extref_names, stems)
+        assignments.update(joined)
+        notes.extend(join_notes)
+        named, name_notes = prototype_name_join(
+            families, roster, extref_names, stems, assigned=assignments)
+        assignments.update(named)
+        notes.extend(name_notes)
+        if not assignments:
+            notes.append("roster join produced no unique binding; using "
+                         "family/geometry pairing")
+
     for key, group in families:
+        if key in assignments:
+            continue
         candidates = [stem for stem in stems
                       if stem in feasible_by_family[key]
-                      and _family_name_matches_child(key, stem)]
+                      and stem not in assignments.values()
+                      and family_name_matches_child(key, stem)]
         if len(candidates) == 1 and candidates[0] not in assignments.values():
             assignments[key] = candidates[0]
             notes.append("%s (%d instances) name -> %s"

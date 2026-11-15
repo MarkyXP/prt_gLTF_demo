@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 
 import assembly_pairing
+import extref_references
+import fastload
 import prt_jt
 import s19_route_a
 import row_state
@@ -29,6 +31,26 @@ from .geometry import child_extent_mm
 from .serialization import object_model_payload
 
 LOGGER = logging.getLogger(__name__)
+
+
+def assembly_structure(data: bytes) -> dict:
+    """Exact EXTREF names and the FastLoad component roster for a part.
+
+    > example
+    > assembly_structure(part_bytes)
+      -> {"roster": {...}, "extref_names": [...], "extref_roots": [...]}
+    """
+    empty = {"roster": fastload.empty_roster(),
+             "extref_names": [], "extref_roots": []}
+    try:
+        streams = prt_jt.open_prt_bytes(data)
+    except Exception:
+        return empty
+    return {
+        "roster": fastload.roster_from_streams(streams),
+        "extref_names": extref_references.reference_names(streams),
+        "extref_roots": extref_references.search_roots(streams),
+    }
 
 
 def placement_families(data: bytes):
@@ -61,7 +83,9 @@ def placement_payload(data: bytes):
 
 def placement_bundle(stems: list[str], collections: dict[str, list[dict]],
                      paths: dict[str, str], families,
-                     payload: bytes | None = None):
+                     payload: bytes | None = None,
+                     roster: dict | None = None,
+                     extref_names: list[str] | None = None):
     """Attach matched placement matrices to resolved child mesh collections.
 
     Hidden (blanked) instances are dropped from the emitted matrices;
@@ -92,7 +116,8 @@ def placement_bundle(stems: list[str], collections: dict[str, list[dict]],
             extent = None
         extents.append((stem, extent))
 
-    assignments, notes = assembly_pairing.pair_instances(families, extents)
+    assignments, notes = assembly_pairing.pair_instances(
+        families, extents, roster=roster, extref_names=extref_names or ())
 
     # Session-34: the display-status rows carry each occurrence's placement
     # + blanked bit; drop the placement frames NX shows hidden.  The row

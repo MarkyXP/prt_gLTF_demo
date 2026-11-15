@@ -170,6 +170,44 @@ def face_colour_blocks(part_path):
     return face_colour_rows_by_body(part_path)
 
 
+def _corner_lane(mesh, triangle_indices, key):
+    """Slice one per-corner lane for the selected triangles.
+
+    > example
+    > mesh = {"tris": [(0, 1, 2), (2, 1, 3)],
+    ...         "cornerColors": [(1,)] * 6}
+    > _corner_lane(mesh, [1], "cornerColors") -> [(1,)] * 3
+    """
+    lane = mesh.get(key)
+    if not lane or len(lane) != 3 * len(mesh.get("tris", [])):
+        return None
+    return [corner for triangle in triangle_indices
+            for corner in lane[3 * triangle:3 * triangle + 3]]
+
+
+def _mesh_record(mesh, triangles, triangle_indices, lane_indices=None,
+                 **extra):
+    """Build one decorated mesh record, preserving per-corner lanes.
+
+    > example
+    > _mesh_record(mesh, [(0, 1, 2)], [0], color=None)["t"]["tris"]
+    > -> [(0, 1, 2)]
+    """
+    if lane_indices is None:
+        lane_indices = range(len(triangle_indices))
+    record = {
+        "pts": mesh["pts"],
+        "tris": [triangles[tri] for tri in triangle_indices],
+        "npts": len(mesh["pts"]),
+        "ntris": len(triangle_indices),
+    }
+    for key in ("cornerNormals", "cornerColors"):
+        lane = _corner_lane(mesh, lane_indices, key)
+        if lane is not None:
+            record[key] = lane
+    return {"t": record, **extra}
+
+
 def decorate_colour_mesh(part_path):
     """Overlay NX face and body colours on every decoded JT piece.
 
@@ -235,32 +273,24 @@ def decorate_colour_mesh(part_path):
             palettes = {group: body_palette for group in info["groups"]}
         else:
             palettes = {}
+        lane_for = {tri: position for position, tri in enumerate(keep)}
         if not palettes:
-            collection.append({
-                "stream": "/Root/FastLoad/JT",
-                "jtPiece": piece,
-                "t": {"pts": mesh["pts"],
-                      "tris": [triangles[tri] for tri in keep],
-                      "npts": len(mesh["pts"]), "ntris": len(keep)},
-                "color": None,
-                "doubleSided": True,
-            })
+            collection.append(_mesh_record(
+                mesh, triangles, keep, range(len(keep)),
+                stream="/Root/FastLoad/JT", jtPiece=piece, color=None,
+                doubleSided=True))
             continue
         by_colour = {}
         for tri in keep:
             palette = palettes.get(mesh["fm"].vtxGrp(tri))
             rgb = table.get(palette, _WHITE) if palette is not None else _WHITE
-            by_colour.setdefault(tuple(rgb), []).append(triangles[tri])
+            by_colour.setdefault(tuple(rgb), []).append(tri)
         for rgb, selected in by_colour.items():
-            collection.append({
-                "stream": "/Root/FastLoad/JT",
-                "jtPiece": piece,
-                "t": {"pts": mesh["pts"], "tris": selected,
-                      "npts": len(mesh["pts"]), "ntris": len(selected)},
-                "color": list(rgb),
-                "doubleSided": True,
-                "colourSource": "nx",
-            })
+            collection.append(_mesh_record(
+                mesh, triangles, selected,
+                [lane_for[tri] for tri in selected],
+                stream="/Root/FastLoad/JT", jtPiece=piece,
+                color=list(rgb), doubleSided=True, colourSource="nx"))
     return collection or None
 
 

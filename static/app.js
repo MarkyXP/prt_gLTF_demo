@@ -13,6 +13,10 @@ const reindex = document.getElementById('reindex');
 const dl = document.getElementById('download');
 const renderNote = document.getElementById('render');
 const refs = document.getElementById('refs');
+const partInfo = document.getElementById('part-info');
+const partPreview = document.getElementById('part-preview');
+const partPreviewDims = document.getElementById('part-preview-dims');
+const partAttributes = document.getElementById('part-attributes');
 
 drop.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', () => fileInput.files.length &&
@@ -216,6 +220,7 @@ function convert(files) {
     scene.remove(current);
     current = null;
   }
+  clearPartInfo();
   const lookup = new FormData();
   for (const part of files) lookup.append('files', part);
   const lookupPromise = fetch('/references', { method: 'POST', body: lookup })
@@ -237,6 +242,8 @@ function convert(files) {
         throw new Error('Conversion failed: ' + detail);
       }
       const job = await res.json();
+      activeConversion.jobId = job.job_id;
+      void loadPartInfo(job.job_id);
       setPhase('Converting components');
       return waitForConversion(job.job_id);
     })
@@ -300,6 +307,55 @@ function convert(files) {
 function formatDuration(milliseconds) {
   const seconds = milliseconds / 1000;
   return seconds < 10 ? seconds.toFixed(1) + 's' : seconds.toFixed(0) + 's';
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  return (bytes / 1024).toFixed(1) + ' kB';
+}
+
+function clearPartInfo() {
+  partInfo.hidden = true;
+  partPreview.hidden = true;
+  partPreview.removeAttribute('src');
+  partPreviewDims.textContent = '';
+  partAttributes.replaceChildren();
+}
+
+function renderPartInfo(metadata) {
+  partAttributes.replaceChildren();
+  for (const attribute of metadata.attributes || []) {
+    const row = document.createElement('div');
+    row.className = 'attr';
+    const key = document.createElement('span');
+    key.className = 'key';
+    key.textContent = attribute.title || '(untitled)';
+    row.append(key, document.createTextNode(' = ' + attribute.value));
+    partAttributes.appendChild(row);
+  }
+  const preview = metadata.preview;
+  partPreview.hidden = true;
+  partPreview.removeAttribute('src');
+  if (preview && preview.url) {
+    partPreview.src = preview.url;
+    partPreview.hidden = false;
+    partPreviewDims.textContent = preview.width + ' × ' + preview.height
+      + ' · ' + formatBytes(preview.byte_size);
+  } else {
+    partPreviewDims.textContent = 'Preview: none';
+  }
+  partInfo.hidden = !preview && !(metadata.attributes || []).length;
+}
+
+async function loadPartInfo(jobId) {
+  const conversion = activeConversion;
+  try {
+    const response = await fetch('/convert/' + jobId + '/metadata');
+    if (!response.ok) return;
+    const metadata = await response.json();
+    if (activeConversion !== conversion || activeConversion.jobId !== jobId) return;
+    renderPartInfo(metadata);
+  } catch (error) {}
 }
 
 function renderReferences(tree) {

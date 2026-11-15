@@ -26,7 +26,14 @@ from .container import (
     iter_jt_streams,
     jt_piece_bases,
     open_prt,
+    open_prt_bytes,
     parse_splm,
+)
+from .display_jt import (
+    decode_display_jt,
+    display_jt_documents,
+    parse_display_jt_index,
+    scene_limitation_warnings,
 )
 from .extractor import extract_meshes
 from .frames import (
@@ -46,4 +53,5 @@ from .frames import (
     parse_jt,
 )
 from .gltf_writer import _only_buffer_views, write_gltf
+from .materials import find_material_body, parse_material_body
 from .trimesh import _decode_piece, _expand_cdp, corner_normal_ids, decode_trimesh

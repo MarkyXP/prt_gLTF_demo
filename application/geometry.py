@@ -66,6 +66,21 @@ def _bounds_intersect(left, right) -> bool:
                and right[axis] <= left[axis + 3] for axis in range(3))
 
 
+def _inherit_metadata(entry: dict, raw_entries: list[dict]) -> dict:
+    """Copy per-piece metadata a colour overlay entry does not carry.
+
+    > example
+    > _inherit_metadata({"jtPiece": 0}, [{"material": {"diffuse": (1,)}}])
+    > -> {"jtPiece": 0, "material": {"diffuse": (1,)}}
+    """
+    if entry.get("material") is None:
+        material = next((item.get("material") for item in raw_entries
+                         if item.get("material") is not None), None)
+        if material is not None:
+            entry["material"] = material
+    return entry
+
+
 def overlay_colour_meshes(raw_collection: list[dict],
                           coloured_collection: list[dict]) -> list[dict]:
     """Overlay colour entries without dropping raw geometry unnecessarily.
@@ -110,7 +125,8 @@ def overlay_colour_meshes(raw_collection: list[dict],
     for key in raw_order:
         decorated = decorated_by_key.pop(key, None)
         if decorated and _is_decorated(decorated):
-            result.extend(decorated)
+            result.extend(_inherit_metadata(entry, raw_by_key[key])
+                          for entry in decorated)
             continue
         raw_entries = raw_by_key[key]
         raw_bounds = _entry_bounds(raw_entries)
@@ -158,6 +174,7 @@ def mesh_collection(data: bytes, part_path=None) -> list[dict]:
                 "jtPiece": mesh["piece"],
                 "t": triangle_mesh,
                 "color": triangle_mesh.get("color"),
+                "material": triangle_mesh.get("material"),
                 "doubleSided": triangle_mesh.get("doubleSided", False),
             })
     if part_path is not None and data[:4] == b"SPLM":

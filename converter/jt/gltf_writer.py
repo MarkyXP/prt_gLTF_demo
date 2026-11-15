@@ -17,6 +17,8 @@ while assembling accessors and buffer views.
 import os
 import struct
 
+from .gltf_materials import build_material as _build_material
+
 def write_gltf(meshes, out_stem, glb=False, part_name=None):
     """Write glTF 2.0 (.gltf + .bin) and optionally single .glb.
 
@@ -38,23 +40,39 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
         if not pts or not tris:
             continue
         cn = t.get('cornerNormals')
+        cc = t.get('cornerColors')
         uvs = t.get('uvs')
-        if cn and len(cn) == 3 * len(tris):
+        full_material = m.get('material')
+        override_vertex_colors = bool(
+            full_material and full_material.get('override_vertex_colors'))
+        corner_normals = (
+            cn if cn and len(cn) == 3 * len(tris) else None
+        )
+        corner_colors = (
+            cc if cc and len(cc) == 3 * len(tris)
+            and not override_vertex_colors else None
+        )
+        if corner_normals or corner_colors:
             render_pts = []
-            render_normals = []
+            render_normals = [] if corner_normals else None
+            render_colors = [] if corner_colors else None
             render_uvs = [] if uvs else None
             render_tris = []
             for ti, tri in enumerate(tris):
                 base = len(render_pts)
                 for k, vi in enumerate(tri):
                     render_pts.append(pts[vi])
-                    render_normals.append(cn[3 * ti + k])
+                    if render_normals is not None:
+                        render_normals.append(corner_normals[3 * ti + k])
+                    if render_colors is not None:
+                        render_colors.append(corner_colors[3 * ti + k])
                     if render_uvs is not None:
                         render_uvs.append(uvs[vi])
                 render_tris.append((base, base + 1, base + 2))
         else:
             render_pts = pts
             render_normals = None
+            render_colors = None
             render_uvs = uvs
             render_tris = tris
         while len(bufs) % 4:
@@ -79,6 +97,21 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
             for uv in render_uvs:
                 bufs += struct.pack('<ff', float(uv[0]), float(uv[1]))
             prim['_uvOff'] = (uv0, len(render_uvs))
+        if render_colors is not None:
+            c0 = len(bufs)
+            translucent = False
+            for color in render_colors:
+                values = tuple(float(value) for value in color)
+                if len(values) == 3:
+                    values += (1.0,)
+                if len(values) != 4:
+                    raise ValueError(
+                        'vertex color must have three or four components')
+                translucent = translucent or values[3] < 1.0
+                bufs += struct.pack('<ffff', *values)
+            prim['_colorOff'] = (c0, len(render_colors))
+            prim['_vertexColors'] = True
+            prim['_vertexBlend'] = translucent
         if t.get('image'):
             prim['_image'] = (t.get('imageName') or ('image-%d' % i),
                               t['image'])
@@ -90,6 +123,7 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
         prim['_idxComp'] = 5125 if need32 else 5123
         prim['_idxW'] = 4 if need32 else 2
         prim['_color'] = m.get('color')
+        prim['_fullMaterial'] = m.get('material')
         prim['_doubleSided'] = bool(m.get('doubleSided'))
         proxy_role = m.get('proxyRole')
         instances = m.get('instances') or []
@@ -146,6 +180,16 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
             prim['attributes']['TEXCOORD_0'] = len(accessors) - 1
             assert u0 == byteEnd
             byteEnd += 8 * uc
+        if '_colorOff' in prim:
+            c0, ccnt = prim.pop('_colorOff')
+            vc = len(views)
+            views.append({'buffer': 0, 'byteOffset': c0,
+                          'byteLength': 16 * ccnt, 'target': 34962})
+            accessors.append({'bufferView': vc, 'componentType': 5126,
+                              'count': ccnt, 'type': 'VEC4'})
+            prim['attributes']['COLOR_0'] = len(accessors) - 1
+            assert c0 == byteEnd
+            byteEnd += 16 * ccnt
         i0, ic = prim.pop('_idx')
         icomp = prim.pop('_idxComp', 5123)
         iw = prim.pop('_idxW', 2)
@@ -172,7 +216,10 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
     for mo in meshes_out:
         prim = mo['primitives'][0]
         col = prim.pop('_color', None)
+        full_material = prim.pop('_fullMaterial', None)
         double_sided = prim.pop('_doubleSided', False)
+        vertex_colors = prim.pop('_vertexColors', False)
+        vertex_blend = prim.pop('_vertexBlend', False)
         image = prim.pop('_image', None)
         if image is not None:
             name, payload = image
@@ -197,6 +244,31 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
                         'doubleSided': True}
             materials.append(material)
             prim['material'] = len(materials) - 1
+            continue
+        if full_material is not None:
+            material_key, material = _build_material(
+                full_material, col, double_sided, vertex_colors,
+                vertex_blend, len(materials))
+            if material_key not in mat_index:
+                mat_index[material_key] = len(materials)
+                materials.append(material)
+            prim['material'] = mat_index[material_key]
+            continue
+        if vertex_colors:
+            material_key = ("vertex-colors", double_sided, vertex_blend)
+            if material_key not in mat_index:
+                mat_index[material_key] = len(materials)
+                material = {'name': 'vertex-colors-%d' % len(materials),
+                            'pbrMetallicRoughness': {
+                                'baseColorFactor': [1.0, 1.0, 1.0, 1.0],
+                                'metallicFactor': 0.1,
+                                'roughnessFactor': 0.6}}
+                if vertex_blend:
+                    material['alphaMode'] = 'BLEND'
+                if double_sided:
+                    material['doubleSided'] = True
+                materials.append(material)
+            prim['material'] = mat_index[material_key]
             continue
         if not col:
             if double_sided:

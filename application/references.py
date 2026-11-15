@@ -20,7 +20,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import extref_references
 import parasolid
+import prt_jt
 
 from .config import BASE_DIR
 from .reference_index import find_sub_assembly
@@ -34,19 +36,57 @@ GENERIC_PART_REFERENCES = {
 }
 
 
+def exact_reference_summary(data: bytes | None) -> tuple[bool, list[str], list[str]]:
+    """Exact EXTREF child names and slot-two directories, when valid.
+
+    The first item is ``True`` when at least one EXTREFSTREAM parsed
+    completely. Regex metadata scanning is only for parts without one.
+
+    > example
+    > exact_reference_summary(part_bytes)
+      -> (True, ["wheel.prt", "cap.prt"], ["C:/assemblies"])
+    """
+    if not data:
+        return False, [], []
+    try:
+        streams = prt_jt.open_prt_bytes(data)
+    except Exception:
+        return False, [], []
+    if not extref_references.has_valid_stream(streams):
+        return False, [], []
+    return (True, extref_references.reference_names(streams),
+            extref_references.search_roots(streams))
+
+
+def _meaningful_names(names: list[str], own: str | None) -> list[str]:
+    """Filter self references and NX boilerplate from a name list."""
+    return [
+        name for name in names
+        if name.lower() != own and name.lower() not in GENERIC_PART_REFERENCES
+    ]
+
+
 def meaningful_part_references(data: bytes,
                                own_name: str | os.PathLike | None = None) -> list[str]:
     """Return real component references, excluding NX boilerplate and self.
+
+    Exact EXTREFSTREAM names win when the stream is valid. The historical
+    regex scan remains the fallback for parts without a valid stream, and
+    also when the exact table names nothing but the part itself (some
+    single-part files write a self-only EXTREFSTREAM; keeping the legacy
+    list preserves their direct-JT precedence).
 
     > example
     > meaningful_part_references(part_bytes, "cap.prt")
       -> ["bracket.prt", "wheel.prt"], minus template references and self
     """
     own = Path(own_name).name.lower() if own_name else None
-    return [
-        name for name in parasolid.referenced_part_names(data)
-        if name.lower() != own and name.lower() not in GENERIC_PART_REFERENCES
-    ]
+    valid, exact_names, _roots = exact_reference_summary(data)
+    if valid:
+        names = _meaningful_names(exact_names, own)
+        if names:
+            return names
+    return _meaningful_names(parasolid.referenced_part_names(data), own)
 
 
 def find_named_part(name: str, roots: list[str | os.PathLike],
@@ -78,6 +118,7 @@ def reference_roots(data: bytes | None = None,
         roots.append(str(containing_dir))
     configured = os.environ.get("PRT_REFERENCE_ROOTS", "")
     roots += [path for path in configured.split(os.pathsep) if path]
+    roots += exact_reference_summary(data)[2]
     roots += parasolid.referenced_search_roots(data)
     roots.append(str(BASE_DIR))
     return list(dict.fromkeys(roots))

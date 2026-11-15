@@ -7,6 +7,7 @@ Inputs:
 Outputs:
   * The static viewer.
   * JSON reference trees and conversion-job progress.
+  * Part metadata and JPEG previews extracted from the uploaded root file.
   * Self-contained ``model/gltf-binary`` responses.
 """
 from __future__ import annotations
@@ -28,12 +29,61 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import BASE_DIR
 from .conversion import _collection_to_glb, convert_to_glb
+from .part_info import read_part_info
 from .reference_index import initialize_reference_index
 from .references import reference_roots, reference_tree
 
 
 LOGGER = logging.getLogger(__name__)
 _conversion_jobs: dict[str, dict] = {}
+
+
+def _metadata_for_client(job_id: str, info: dict) -> dict:
+    """Strip raw preview bytes and add the preview endpoint URL.
+
+    > example
+    > _metadata_for_client("abc", {"preview": {"data": b"jpeg", ...}})
+      -> {"preview": {..., "url": "/convert/abc/preview"}, ...}
+    """
+    metadata = {
+        "attributes": list(info.get("attributes") or []),
+        "preview": None,
+        "arrangements": list(info.get("arrangements") or []),
+    }
+    if "units" in info:
+        metadata["units"] = info["units"]
+    preview = info.get("preview")
+    if preview:
+        metadata["preview"] = {
+            "media_type": preview["media_type"],
+            "width": preview["width"],
+            "height": preview["height"],
+            "byte_size": preview["byte_size"],
+            "url": "/convert/%s/preview" % job_id,
+        }
+    return metadata
+
+
+def _job_state(job: dict) -> dict:
+    """Build the public status payload, excluding bytes and internal locks.
+
+    > example
+    > _job_state({"status": "queued", "glb": b"...", "lock": Lock()})
+      -> {"status": "queued", "artifacts": [...]}
+    """
+    with job["lock"]:
+        state = {
+            key: value for key, value in job.items()
+            if key not in {"glb", "error", "artifact_keys", "artifacts",
+                           "lock", "metadata", "preview"}
+        }
+        state["artifacts"] = [
+            {key: value for key, value in item.items() if key != "glb"}
+            for item in job["artifacts"]
+        ]
+        if "error" in job:
+            state["error"] = job["error"]
+    return state
 
 
 def _build_reference_tree(name: str,
@@ -198,6 +248,8 @@ async def convert(files: list[UploadFile] | None = File(None),
     ]
     part_name = Path(root.filename or "part.prt").stem
     job_id = uuid4().hex
+    info = await asyncio.to_thread(read_part_info, data)
+    preview = info.get("preview")
     _conversion_jobs[job_id] = {
         "status": "queued",
         "current": None,
@@ -206,11 +258,15 @@ async def convert(files: list[UploadFile] | None = File(None),
         "missing_parts": [],
         "artifacts": [],
         "artifact_keys": set(),
+        "metadata": _metadata_for_client(job_id, info),
+        "preview": preview["data"] if preview else None,
         "lock": Lock(),
     }
     LOGGER.info(
-        "request=/convert file=%s job=%s uploads=%d",
-        root.filename or "part.prt", job_id, len(uploads))
+        "request=/convert file=%s job=%s uploads=%d attrs=%d preview=%s",
+        root.filename or "part.prt", job_id, len(uploads),
+        len(info.get("attributes") or []),
+        "yes" if preview else "no")
     asyncio.create_task(_run_conversion(
         job_id, data, part_name, extra_parts))
     return {"job_id": job_id}
@@ -227,18 +283,43 @@ async def conversion_status(job_id: str):
     job = _conversion_jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="conversion job not found")
+    return _job_state(job)
+
+
+@app.get("/convert/{job_id}/metadata")
+async def conversion_metadata(job_id: str):
+    """Return extracted part metadata without raw preview bytes.
+
+    > example
+    > GET /convert/<job_id>/metadata
+      -> {"attributes": [...], "preview": {"url": ...} or None, ...}
+    """
+    job = _conversion_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="conversion job not found")
     with job["lock"]:
-        state = {
-            key: value for key, value in job.items()
-            if key not in {"glb", "error", "artifact_keys", "artifacts", "lock"}
-        }
-        state["artifacts"] = [
-            {key: value for key, value in item.items() if key != "glb"}
-            for item in job["artifacts"]
-        ]
-        if "error" in job:
-            state["error"] = job["error"]
-    return state
+        metadata = job.get("metadata")
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="part metadata not available")
+    return metadata
+
+
+@app.get("/convert/{job_id}/preview")
+async def conversion_preview(job_id: str):
+    """Return the embedded JPEG preview for a conversion job.
+
+    > example
+    > GET /convert/<job_id>/preview
+      -> an ``image/jpeg`` body, or 404 when the part has no preview
+    """
+    job = _conversion_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="conversion job not found")
+    with job["lock"]:
+        preview = job.get("preview")
+    if not preview:
+        raise HTTPException(status_code=404, detail="preview not available")
+    return Response(content=preview, media_type="image/jpeg")
 
 
 @app.get("/convert/{job_id}/artifacts/{artifact_id}")

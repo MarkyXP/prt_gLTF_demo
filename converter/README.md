@@ -20,6 +20,7 @@ modules through the flat imports `app.py` sets up (`converter/` is on
 | `suppress_state.py` | per-component suppress-state records (structure-row reader + loader-side flag reader) |
 | `color_index.py`  | part-colour record reader (NX palette index) + translucent-percent sites |
 | `body_display.py` | per-body display-state atom reader (blanked/non-displayed bodies) |
+| `rmfastload/`     | RMFastLoad object-id membership parser, complete-set selector, and diagnostics (see its README) |
 | `palette.py`      | palette row-RGB decoder merged over the factory default table |
 | `face_colour.py`  | per-face display-colour rows decoded from `UG_PART` (header model + face-id rank) |
 | `nx_default_palette.json` | 216-entry factory colour table fallback |

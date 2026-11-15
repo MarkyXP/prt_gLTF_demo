@@ -5,6 +5,7 @@ import unittest
 from application import config  # noqa: F401
 from application.geometry import overlay_colour_meshes
 from converter.face_matching import assign_piece_tags, effective_palettes
+from converter.face_colour import _corner_lane, _mesh_record
 
 
 def entry(piece, color=None):
@@ -79,3 +80,36 @@ class PieceMatchingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DecoratedLaneTests(unittest.TestCase):
+    def test_selected_triangles_keep_their_corner_lanes(self):
+        mesh = {
+            "pts": [(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)],
+            "tris": [(0, 1, 2), (2, 1, 3)],
+            "cornerNormals": [(0, 0, 1)] * 3 + [(0, 0, -1)] * 3,
+            "cornerColors": [(1, 0, 0, 1)] * 3 + [(0, 1, 0, 1)] * 3,
+        }
+        record = _mesh_record(mesh, mesh["tris"], [1], [1],
+                              color=[0, 1, 0])
+        self.assertEqual(record["t"]["tris"], [(2, 1, 3)])
+        self.assertEqual(record["t"]["cornerNormals"], [(0, 0, -1)] * 3)
+        self.assertEqual(record["t"]["cornerColors"], [(0, 1, 0, 1)] * 3)
+
+    def test_overlay_inherits_full_material_from_raw_piece(self):
+        raw = [{
+            "stream": "JT", "jtPiece": 0,
+            "t": {"pts": [(0, 0, 0)], "tris": []},
+            "material": {"diffuse": (0.1, 0.2, 0.3, 1.0)},
+        }]
+        decorated = [entry(0, [1, 0, 0])]
+        result = overlay_colour_meshes(raw, decorated)
+        self.assertEqual(result[0]["material"],
+                         {"diffuse": (0.1, 0.2, 0.3, 1.0)})
+
+    def test_lane_length_mismatch_is_ignored(self):
+        mesh = {"pts": [(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+                "tris": [(0, 1, 2)], "cornerColors": [(1, 1, 1, 1)]}
+        self.assertIsNone(_corner_lane(mesh, [0], "cornerColors"))
+        record = _mesh_record(mesh, [(0, 1, 2)], [0])
+        self.assertNotIn("cornerColors", record["t"])

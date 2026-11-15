@@ -32,18 +32,26 @@ class Stream(namedtuple('Stream', 'name start length data')):
 
     __repr__ = lambda s: 'Stream(%s, @%d len %d)' % (s.name, s.start, s.length)
 
+def open_prt_bytes(blob):
+    """Open NX .prt container bytes -> dict[str -> Stream].
+
+    > example
+    > open_prt_bytes(b'SPLM...') -> {'/Root/UG_PART/JT': Stream(...), ...}
+    """
+    if blob[:8] == OLE_MAGIC:
+        return {n: Stream(n, -1, len(d), d) for n, d in _ole_flat(blob)}
+    if blob[:4] != b'SPLM':
+        raise ValueError('not a SPLM/OLE2 container: %r' % blob[:8])
+    return parse_splm(blob)
+
+
 def open_prt(path):
     """Open an NX .prt (SPLM or OLE2/CFBF container) -> dict[str -> Stream].
 
     > example
     > open_prt('part.prt') -> {'/Root/UG_PART/JT': Stream(...), ...}
     """
-    blob = open(path, 'rb').read()
-    if blob[:8] == OLE_MAGIC:
-        return {n: Stream(n, -1, len(d), d) for n, d in _ole_flat(blob)}
-    if blob[:4] != b'SPLM':
-        raise ValueError('not a SPLM/OLE2 container: %r' % blob[:8])
-    return parse_splm(blob)
+    return open_prt_bytes(open(path, 'rb').read())
 
 def _directory_chain(blob, start):
     """Walk a [u32 len][name][u64 offset][u64 length] chain from `start`."""

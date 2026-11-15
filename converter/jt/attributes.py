@@ -13,6 +13,8 @@ palette map 5.4.8 / Annex E.
 
 import struct
 
+from .materials import find_material_body
+
 G_TID_LATE_LOADED = 'e55bb0e0bdfbd111a3a700aa00d10954'
 G_TID_MATERIAL = '3010dd10c82ad1119b6b0080c7bb5997'
 G_TID_PALETTE_MAP = '0611dd10c82ad1119b6b0080c7bb5997'
@@ -33,20 +35,24 @@ def _find_rgba_alignment(payload):
     return best
 
 def parse_material_payload(payload):
-    """Material Attribute Element payload (spec figure 50) -> colour dict.
+    """Material Attribute Element payload -> material dict or None.
 
-    Known-good framing (verified byte-for-byte on a vendor-written v9.5 JT
-    with a known diffuse colour): the derived fields are RGBA float32 quads;
-    a per-block 'common RGB' flag may compress r,g,b to a single float
-    (alpha forced 1.0) -- decoded empirically here. The v9 storage adds a
-    writer meta head between Base Attribute Data and the RGBA quads whose
-    field boundaries this prototype does not re-derive; the RGBA locator
-    works regardless of that head length.
+    The exact JT 9 v1/v2 body is parsed first, including a short bounded
+    prefix search for writers that prepend framing bytes.  Only when no exact
+    body validates does the legacy RGBA-alignment heuristic run, preserving
+    the historical fallback for payloads this prototype still cannot frame.
 
     > example
     > parse_material_payload(material_payload_bytes)
-    >   -> {'diffuse': (r, g, b, 1.0), 'quads': [...] } or None
+    >   -> {'version': 2, 'diffuse': (r, g, b, a), 'ambient': ...,
+    >       'shininess': ..., 'quads': [...]} or the legacy
+    >      {'diffuse': (r, g, b, 1.0), 'quads': [...]} or None
     """
+    offset, material = find_material_body(payload)
+    if material is not None:
+        material = dict(material)
+        material['offset'] = offset
+        return material
     seq = _find_rgba_alignment(payload)
     if not seq:
         return None

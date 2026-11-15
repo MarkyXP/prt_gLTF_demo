@@ -20,6 +20,7 @@ from .tokens import (
     connector_id,
     frame_child_name,
     placement_object_index,
+    placement_uuid,
 )
 
 
@@ -100,6 +101,7 @@ def cluster_families(data, frames):
         frame["child_name"] = frame_child_name(
             data, frame, limit=next_offset)
         frame["object_index"] = placement_object_index(data, frame)
+        frame["uuid"] = placement_uuid(data, frame)
     buckets = {}
     for frame in ordered_frames:
         key = family_key(frame["connector"], frame["child_name"])
