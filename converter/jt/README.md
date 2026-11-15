@@ -10,8 +10,11 @@ this package for the historical flat import name.
   preamble over the JT piece (see `jt_piece_bases` for the multi-piece
   layout).
 * `OLE2/CFBF` containers (older NX, magic `d0cf11e0a1b11ae1`): UG_PART/JT
-  and UG_PART/DisplayJT streams behind a 20-byte OM preamble
-  `[8][1][0][X][20]`; nested OLE JT payloads are flattened (`ole.py`).
+  and UG_PART/DisplayJT streams behind a compact piece table
+  `[8][count][0]` plus `count * {u32 companion, u32 versionOffset}`; the
+  first header is at `12 + 8*count`. The older single-piece form
+  `[8][1][0][X][20]` is the `count = 1` case; nested OLE JT payloads are
+  flattened (`ole.py`).
 
 ## JT format basis
 
@@ -39,6 +42,11 @@ Verified against an NX writer ("Version 9.4 JT  DM 10.0.2.1"):
   preamble byte length, `28 + 16*(pieces-1)`); each extra piece begins
   directly with its own `Version ...` header. The first header is located
   using that length, including when a large piece table exceeds 256 bytes.
+* Compact OLE2 piece table: `[u32 8][u32 count][u32 0]` followed by
+  `count * {u32 companion, u32 versionOffset}`; the first header is at
+  `12 + 8*count`. Both table layouts are validated with the same header
+  check (Version prefix, byte order, in-range TOC) before use; malformed
+  declared tables are rejected rather than searched heuristically.
 * Separator/hex notation such as `47 01 04 01`, `ff ff`, `e0 <tok> f0`
   are part-format byte patterns.
 

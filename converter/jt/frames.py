@@ -43,13 +43,40 @@ def _guid(b):
     f2 = b[8:16]
     return '%02x%02x%02x%02x-%s' % (0, 0, 0, 0, '') if False else b.hex()
 
+def _valid_jt_header(data, offset):
+    """Check that `offset` starts a plausible 'Version[80]' JT header.
+
+    The candidate must begin with 'Version', carry a valid byte-order byte,
+    and declare a TOC that lies inside the stream.
+
+    > example
+    > _valid_jt_header(b'Version' + b' ' * 73 + b'\\x00' * 32, 0) -> False
+    """
+    if offset < 0 or offset + 105 > len(data):
+        return False
+    if data[offset:offset + 7] != b'Version':
+        return False
+    if data[offset + 80] not in (0, 1):
+        return False
+    toc_off = struct.unpack_from('<I', data, offset + 85)[0]
+    return 0 < toc_off < len(data) - offset
+
+
 def _find_version_base(data):
     """Locate the start (byte offset) of the JT 'Version[80]' header string.
 
     Verified writers:
       - bare stream: Version string at 0.
       - SPLM FastLoad/JT embedded: u32 OM preamble then Version; the preamble
-        length is u32[5], followed by a table of piece offsets.
+        length is u32[5], followed by a table of piece offsets
+        (``28 + 16*(count-1)``).
+      - OLE2 UG_PART/JT embedded: compact table of ``8*count`` bytes after a
+        12-byte preamble, so the first header is at ``12 + 8*count`` (the
+        documented 20-byte single-piece form is the ``count = 1`` case).
+
+    The legacy SPLM layout is checked first, so existing files keep taking
+    the same branch. Both declared layouts are validated by the same header
+    check before the fixed 256-byte fallback search is attempted.
 
     > example
     > _find_version_base(b'Version' + b' ' * 73) -> 0
@@ -60,12 +87,11 @@ def _find_version_base(data):
         count = struct.unpack_from('<I', data, 4)[0]
         preamble_length = struct.unpack_from('<I', data, 20)[0]
         if (count >= 1 and preamble_length == 28 + 16 * (count - 1)
-                and preamble_length + 105 <= len(data)
-                and data[preamble_length:preamble_length + 7] == b'Version'):
-            q = preamble_length
-            toc_off = struct.unpack_from('<I', data, q + 85)[0]
-            if data[q + 80] in (0, 1) and 0 < toc_off < len(data) - q:
-                return q
+                and _valid_jt_header(data, preamble_length)):
+            return preamble_length
+        compact_length = 12 + 8 * count
+        if count >= 1 and _valid_jt_header(data, compact_length):
+            return compact_length
     q = data.find(b'Version', 0, 0x100)
     if q <= 0 or q + 105 > len(data):
         return -1

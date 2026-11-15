@@ -5,9 +5,10 @@ as a fixed record whose header is byte-identical across the families
 checked:
 
     record opener   47 01 04 01
-    colour header   c0 44 04 00
+    colour header   c0 44 04 00  (current) / c0 44 84 00, c0 40 84 00,
+                    c0 46 04 04  (legacy body-row family)
     colour token    <OM int token that decodes to palette index + 1>
-    row tail        02 0b (fixture family) / 02 0a (older family)
+    row tail        02 <tag token> 01 93 8e
 
 Verified against controlled saves (fresh-session reload read-back):
   * token 0x25            -> object reports colour 36
@@ -42,6 +43,14 @@ import prt_jt  # noqa: E402
 ColourSite = namedtuple("ColourSite", "offset opener token kind")
 
 HEAD = bytes([0xC0, 0x44, 0x04, 0x00])
+LEGACY_BODY_HEADS = (
+    bytes([0xC0, 0x44, 0x84, 0x00]),
+    bytes([0xC0, 0x40, 0x84, 0x00]),
+    bytes([0xC0, 0x46, 0x04, 0x04]),
+)
+HEADS = (HEAD,) + LEGACY_BODY_HEADS
+BOUNDS_HEADS = (bytes([0xF0, 0x01, 0x01, 0x07]),
+                bytes([0xF0, 0x0B, 0x01, 0x07]))
 BODY_OPENER = bytes([0x47, 0x01, 0x04, 0x01])
 SUB_OPENER = bytes([0x47, 0x04, 0x04, 0x01])
 
@@ -64,11 +73,37 @@ def _decode_token(data, at):
     return None
 
 
+def _legacy_body_token(payload, head_offset):
+    """Palette index of a legacy body row, or None when the row is malformed.
+
+    The legacy head family shares the body grammar but may store a wide tag
+    token, so the row tail ``02 <tag token> 01 93 8e`` is validated explicitly.
+
+    > example
+    > _legacy_body_token(payload, 846458) -> 98
+    """
+    token = _decode_token(payload, head_offset + 4)
+    if token is None:
+        return None
+    body = head_offset + 4 + token[1]
+    if payload[body:body + 1] != b"\x02":
+        return None
+    tag = _decode_token(payload, body + 1)
+    if tag is None:
+        return None
+    if payload[body + 1 + tag[1]:body + 4 + tag[1]] != b"\x01\x93\x8e":
+        return None
+    return token[0]
+
+
 def colour_sites(payload):
     """Every body/sub-object colour record in a UG_PART payload.
 
     Only openers 47 01 04 01 (body) and 47 04 04 01 (sub) count; opens
-    with other leading bytes are "other" and skipped.
+    with other leading bytes are "other" and skipped. Both the current
+    ``c0 44 04 00`` head and the legacy body heads are scanned; legacy rows
+    must carry a complete ``02 <tag> 01 93 8e`` body tail and encoded body
+    bounds, so records without a structural anchor are ignored.
 
     > example
     >>> colour_sites(b"\\x47\\x01\\x04\\x01\\xc0\\x44\\x04\\x00\\x25")
@@ -77,16 +112,26 @@ def colour_sites(payload):
     []
     """
     sites = []
-    i = payload.find(HEAD)
-    while i >= 0:
-        opener = payload[i - 4:i] if i >= 4 else b""
-        kind = {BODY_OPENER: "body",
-                SUB_OPENER: "sub"}.get(bytes(opener), "other")
-        if kind != "other":
-            token = _decode_token(payload, i + 4)
-            if token is not None:
-                sites.append(ColourSite(i, opener.hex(), token[0], kind))
-        i = payload.find(HEAD, i + 1)
+    for head in HEADS:
+        i = payload.find(head)
+        while i >= 0:
+            opener = payload[i - 4:i] if i >= 4 else b""
+            kind = {BODY_OPENER: "body",
+                    SUB_OPENER: "sub"}.get(bytes(opener), "other")
+            if kind != "other":
+                if head == HEAD:
+                    token = _decode_token(payload, i + 4)
+                    if token is not None:
+                        sites.append(ColourSite(
+                            i, opener.hex(), token[0], kind))
+                elif kind == "body":
+                    palette = _legacy_body_token(payload, i)
+                    if palette is not None and \
+                            _bounds_before(payload, i) is not None:
+                        sites.append(ColourSite(
+                            i, opener.hex(), palette, kind))
+            i = payload.find(head, i + 1)
+    sites.sort(key=lambda site: site.offset)
     return sites
 
 
@@ -127,12 +172,15 @@ def body_palette_records(part_path):
 def _bounds_before(payload, colour_offset):
     """Decode the six shifted doubles 56 bytes before a body colour header.
 
+    Both the current ``f0 01 01 07`` atom head and the legacy
+    ``f0 0b 01 07`` head are accepted.
+
     > example
     > _bounds_before(payload, site.offset) -> (xmin, ymin, zmin, xmax, ymax, zmax)
     >   or None when the atom head is absent or malformed
     """
     start = colour_offset - 56
-    if start < 0 or payload[start:start + 4] != b"\xf0\x01\x01\x07":
+    if start < 0 or payload[start:start + 4] not in BOUNDS_HEADS:
         return None
     atoms = payload[start + 4:colour_offset - 4]
     if len(atoms) != 48 or not all(

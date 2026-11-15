@@ -25,7 +25,7 @@ import re
 import struct
 from collections import namedtuple
 
-from .frames import _find_version_base
+from .frames import _find_version_base, _valid_jt_header
 
 class Stream(namedtuple('Stream', 'name start length data')):
     """One named payload region of the container (immutable record)."""
@@ -128,10 +128,19 @@ def iter_jt_streams(streams):
 def jt_piece_bases(data):
     """-> byte offsets of every independent inner JT piece in one JT stream.
 
-    Preamble u32[1] = piece count; when > 1 the preamble carries
-    (u32[1]-1) x {u64 X, u64 pieceOffset} pairs (u32[5] = preamble byte
-    length, 28 + 16*(pieces-1)); each extra piece begins directly with its
-    own 'Version ...' header (verified: JIG whole-/LEFT/RIGHT assemblies).
+    Two declared table layouts are supported:
+
+    - Legacy SPLM: u32[1] = piece count; when > 1 the preamble carries
+      (u32[1]-1) x {u64 X, u64 pieceOffset} pairs (u32[5] = preamble byte
+      length, 28 + 16*(pieces-1)); each extra piece begins directly with its
+      own 'Version ...' header (verified: JIG whole-/LEFT/RIGHT assemblies).
+    - Compact OLE2: 12-byte preamble then u32[1] x {u32 companion,
+      u32 pieceOffset} entries, so the first header is at 12 + 8*count.
+      This is the count = 1 form documented as [8][1][0][X][20].
+
+    Every candidate offset is validated as a JT header; malformed declared
+    tables are rejected rather than scanned blindly for later 'Version'
+    strings.
 
     > example
     > jt_piece_bases(open_prt('part.prt')['/Root/UG_PART/JT'].data)
@@ -152,6 +161,12 @@ def jt_piece_bases(data):
                     out.append(-int(off) - 1)
             if any(o < 0 for o in out):
                 out = [o for o in out if o >= 0]
+        elif n > 1 and q == 12 + 8 * n:
+            offsets = [struct.unpack_from(
+                '<I', data, 12 + 8 * index + 4)[0] for index in range(n)]
+            if offsets[0] == q and all(
+                    _valid_jt_header(data, off) for off in offsets):
+                out = [int(off) for off in offsets]
     return out
 
 OLE_MAGIC = bytes.fromhex('d0cf11e0a1b11ae1')

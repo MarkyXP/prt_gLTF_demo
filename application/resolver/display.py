@@ -25,11 +25,15 @@ from collections import Counter
 LOGGER = logging.getLogger(__name__)
 
 
-def _match_body_bounds(collection, records):
-    """Match JT pieces to uniquely close encoded body bounds when available.
+def _piece_bounds(collection):
+    """Map ``(stream, jtPiece)`` keys to their six-value bounds.
+
+    Returns None when any entry lacks a piece identity.
 
     > example
-    > _match_body_bounds(collection, records) -> {piece_key: record_index} or None
+    > _piece_bounds([{"stream": "jt", "jtPiece": 0,
+    >                "t": {"pts": [(0, 0, 0), (1, 1, 1)]}}])
+    > -> {("jt", 0): (0, 0, 0, 1, 1, 1)}
     """
     pieces = {}
     for entry in collection:
@@ -37,22 +41,115 @@ def _match_body_bounds(collection, records):
             return None
         key = (entry["stream"], entry["jtPiece"])
         pieces.setdefault(key, []).extend(entry["t"]["pts"])
-    if not pieces or not records or any(
+    bounds = {}
+    for key, points in pieces.items():
+        if not points or any(not math.isfinite(value)
+                             for point in points for value in point):
+            continue
+        value = tuple(min(point[axis] for point in points)
+                      for axis in range(3))
+        value += tuple(max(point[axis] for point in points)
+                       for axis in range(3))
+        if math.dist(value[:3], value[3:]):
+            bounds[key] = value
+    return bounds
+
+
+def _box_volume(bounds):
+    """Volume of a six-value axis-aligned box (zero when inverted).
+
+    > example
+    > _box_volume((0, 0, 0, 2, 3, 4)) -> 24.0
+    """
+    return max(0.0, bounds[3] - bounds[0]) * \
+        max(0.0, bounds[4] - bounds[1]) * max(0.0, bounds[5] - bounds[2])
+
+
+def _box_iou(left, right):
+    """Intersection-over-union of two six-value bounds.
+
+    > example
+    > _box_iou((0, 0, 0, 1, 1, 1), (0, 0, 0, 1, 1, 1)) -> 1.0
+    """
+    if left is None or right is None:
+        return 0.0
+    overlap = (max(left[0], right[0]), max(left[1], right[1]),
+               max(left[2], right[2]), min(left[3], right[3]),
+               min(left[4], right[4]), min(left[5], right[5]))
+    intersection = _box_volume(overlap)
+    union = _box_volume(left) + _box_volume(right) - intersection
+    return intersection / union if union > 0 else 0.0
+
+
+def _match_body_overlap(collection, records, taken_pieces=(),
+                        taken_records=()):
+    """Bind remaining body records to pieces by bounding-box overlap.
+
+    A record is bound only when its best IoU is at least 0.1 and either
+    twice the runner-up or at least 0.05 higher (near-duplicate sheets share
+    most of their box, so the absolute gap separates them). One-to-one
+    conflicts go to the higher overlap. Ambiguous or weak pairs remain
+    unbound, so their pieces keep their own colour. This complements
+    :func:`_match_body_bounds`, which uses exact normalized distance on the
+    newer record family.
+
+    > example
+    > _match_body_overlap(collection, records) -> {("jt", 0): 0}
+    """
+    piece_bounds = _piece_bounds(collection)
+    if not piece_bounds:
+        return {}
+    taken_pieces = set(taken_pieces)
+    taken_records = set(taken_records)
+    candidates = {}
+    for index, record in enumerate(records):
+        if index in taken_records:
+            continue
+        target = record[2]
+        if target is None or not all(math.isfinite(value) for value in target) \
+                or any(target[axis] > target[axis + 3] for axis in range(3)):
+            continue
+        scored = sorted(
+            ((_box_iou(bounds, target), key)
+             for key, bounds in piece_bounds.items()
+             if key not in taken_pieces),
+            reverse=True,
+        )
+        if not scored or scored[0][0] < 0.1:
+            continue
+        best = scored[0][0]
+        runner_up = scored[1][0] if len(scored) > 1 else 0.0
+        if runner_up and best < 2 * runner_up and \
+                best - runner_up < 0.05:
+            continue
+        candidates[index] = (best, scored[0][1])
+    out = {}
+    used = set(taken_pieces)
+    for index, (_score, key) in sorted(
+            candidates.items(), key=lambda item: item[1][0], reverse=True):
+        if key in used:
+            continue
+        out[key] = index
+        used.add(key)
+    return out
+
+
+def _match_body_bounds(collection, records):
+    """Match JT pieces to uniquely close encoded body bounds when available.
+
+    > example
+    > _match_body_bounds(collection, records) -> {piece_key: record_index} or None
+    """
+    pieces = _piece_bounds(collection)
+    if pieces is None or not pieces or not records or any(
         record[2] is None or not all(math.isfinite(value) for value in record[2])
         or any(record[2][axis] > record[2][axis + 3] for axis in range(3))
         for record in records
     ):
         return None
     matches = {}
-    for key, points in pieces.items():
-        if not points or any(not math.isfinite(value)
-                             for point in points for value in point):
-            continue
-        bounds = tuple(min(point[axis] for point in points) for axis in range(3))
-        bounds += tuple(max(point[axis] for point in points) for axis in range(3))
+    for key, bounds in pieces.items():
         diagonal = math.dist(bounds[:3], bounds[3:])
-        if not diagonal:
-            continue
         scores = sorted((math.dist(bounds, record[2]) / diagonal, index)
                         for index, record in enumerate(records))
         if scores[0][0] > 0.02 or (len(scores) > 1 and
@@ -109,6 +206,13 @@ def paint_body_display(path: str, collection: list[dict]) -> tuple[list[dict], i
             matches = (
                 _match_body_bounds(collection, records)
                 if len(records) > 1 else None)
+            if matches is not None:
+                extra = _match_body_overlap(
+                    collection, records,
+                    taken_pieces=set(matches),
+                    taken_records=set(matches.values()))
+                if extra:
+                    matches.update(extra)
             if len(records) > 1 and matches is None:
                 LOGGER.warning("Cannot confidently match body colours to JT bounds for %s; using record order", path)
             elif matches is not None:

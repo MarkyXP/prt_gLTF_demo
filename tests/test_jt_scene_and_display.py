@@ -4,7 +4,11 @@ import unittest
 from unittest.mock import patch
 
 from application import config  # noqa: F401
-from application.resolver.display import _match_body_bounds, paint_body_display
+from application.resolver.display import (
+    _match_body_bounds,
+    _match_body_overlap,
+    paint_body_display,
+)
 from color_index import body_palette_bounds_records
 from jt.attributes import G_TID_LATE_LOADED
 from jt.scene import selected_shape_segments
@@ -143,6 +147,49 @@ class ColourTests(unittest.TestCase):
         with patch("color_index.find_ug_part", return_value=record), \
              patch("converter.palette.palette_table", return_value={}):
             self.assertEqual(body_palette_bounds_records("test.prt"), [(1, None, None)])
+
+    def test_decodes_legacy_body_row_and_bounds_head(self):
+        def atom(value):
+            data = bytearray(struct.pack(">d", value * 4))
+            data[0] = (data[0] - 0x10) & 0xff
+            return bytes(data)
+        bounds = (-0.4, -0.7, -0.03, -0.3, 0.1, 1.28)
+        prefix = b"\xf0\x0b\x01\x07" + b"".join(atom(value) for value in bounds)
+        record = (b"\x47\x01\x04\x01\xc0\x44\x84\x00\x63"
+                  b"\x02\x80\x8b\x01\x93\x8e")
+        with patch("color_index.find_ug_part", return_value=prefix + record), \
+             patch("converter.palette.palette_table",
+                   return_value={98: (0.0, 0.616, 0.851)}):
+            self.assertEqual(body_palette_bounds_records("test.prt"),
+                             [(98, (0.0, 0.616, 0.851), bounds)])
+        with patch("color_index.find_ug_part", return_value=record), \
+             patch("converter.palette.palette_table", return_value={}):
+            self.assertEqual(body_palette_bounds_records("test.prt"), [])
+
+    def test_overlap_binding_fills_remaining_records_only(self):
+        collection = [
+            {"stream": "jt", "jtPiece": 0,
+             "t": {"pts": [(0, 0, 0), (10, 10, 10)]}, "color": None},
+            {"stream": "jt", "jtPiece": 1,
+             "t": {"pts": [(20, 0, 0), (21, 1, 1)]}, "color": None},
+            {"stream": "jt", "jtPiece": 2,
+             "t": {"pts": [(30, 0, 0), (31, 1, 1)]}, "color": None},
+        ]
+        records = [
+            (98, (0.0, 0.616, 0.851), (-0.5, -0.5, -0.5, 10.5, 10.5, 10.5)),
+            (173, (0.2, 0.2, 0.2), (20, 0, 0, 21, 1, 1)),
+        ]
+        with patch("color_index.body_palette_bounds_records",
+                   return_value=records), \
+             patch("color_index.body_translucency", return_value=0):
+            painted, dropped = paint_body_display("test.prt", collection)
+        self.assertEqual(dropped, 0)
+        self.assertEqual([entry["color"] for entry in painted],
+                         [[0.0, 0.616, 0.851], [0.2, 0.2, 0.2], None])
+        self.assertEqual(
+            _match_body_overlap(collection, records, taken_pieces={("jt", 1)},
+                                taken_records={1}),
+            {("jt", 0): 0})
 
 
 if __name__ == "__main__":
