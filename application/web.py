@@ -125,6 +125,15 @@ async def _run_conversion(job_id: str, data: bytes, part_name: str,
             elif event == "missing":
                 job["completed"] += 1
                 job["missing_parts"].append(part)
+            elif event == "failed":
+                job["failed_parts"].append(part)
+
+    def on_references(part: str, children: list[str]):
+        with job["lock"]:
+            job["reference_updates"].append({
+                "parent": part,
+                "children": list(children),
+            })
 
     def artifact(path: str, part: str, collection: list[dict]):
         key = os.path.normcase(os.path.abspath(path))
@@ -147,7 +156,8 @@ async def _run_conversion(job_id: str, data: bytes, part_name: str,
         job["status"] = "running"
     try:
         glb, stats = await asyncio.to_thread(
-            convert_to_glb, data, part_name, extra_parts, progress, artifact)
+            convert_to_glb, data, part_name, extra_parts, progress, artifact,
+            on_references)
         with job["lock"]:
             job.update(status="complete", current=None, glb=glb, stats=stats)
         LOGGER.info(
@@ -256,6 +266,8 @@ async def convert(files: list[UploadFile] | None = File(None),
         "completed": 0,
         "completed_parts": [],
         "missing_parts": [],
+        "failed_parts": [],
+        "reference_updates": [],
         "artifacts": [],
         "artifact_keys": set(),
         "metadata": _metadata_for_client(job_id, info),

@@ -184,6 +184,7 @@ def placement_bundle(stems: list[str], collections: dict[str, list[dict]],
 
     collection = []
     cursor = 0
+    next_occurrence_index: dict[str, int] = {}
     for key, group in families:
         stem = assignments.get(key)
         if stem is None or stem not in collections:
@@ -192,6 +193,8 @@ def placement_bundle(stems: list[str], collections: dict[str, list[dict]],
         instances = []
         dropped_hidden = 0
         for index, frame in enumerate(group):
+            occurrence_index = next_occurrence_index.get(stem, 0)
+            next_occurrence_index[stem] = occurrence_index + 1
             if frame_flags and frame_flags[cursor + index]:
                 dropped_hidden += 1
                 continue
@@ -206,6 +209,7 @@ def placement_bundle(stems: list[str], collections: dict[str, list[dict]],
             instances.append({
                 "matrix": matrix,
                 "name": "%s#%d" % (stem, index),
+                "occurrenceIndex": occurrence_index,
             })
         cursor += len(group)
         if dropped_hidden:

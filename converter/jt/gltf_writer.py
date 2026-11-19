@@ -19,7 +19,8 @@ import struct
 
 from .gltf_materials import build_material as _build_material
 
-def write_gltf(meshes, out_stem, glb=False, part_name=None):
+def write_gltf(meshes, out_stem, glb=False, part_name=None,
+               component_by_mesh=None, instance_parent_by_mesh=None):
     """Write glTF 2.0 (.gltf + .bin) and optionally single .glb.
 
     meshes = list of {'stream': name, 't': decode_trimesh dict}.
@@ -127,14 +128,20 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
         prim['_doubleSided'] = bool(m.get('doubleSided'))
         proxy_role = m.get('proxyRole')
         instances = m.get('instances') or []
+        component = (
+            (component_by_mesh or {}).get(id(m)) or m.get('component'))
         node_name = part_name or ('part-%d' % i)
         today = len(instances)
         if instances:
             node_name = instances[0].get('name') or node_name
         else:
-            nodes.append({'name': node_name,
-                          'mesh': len(meshes_out)})
+            node = {'name': node_name, 'mesh': len(meshes_out)}
+            if component:
+                node['extras'] = {'component': component}
+            nodes.append(node)
         extras = {'sourceStream': m.get('stream')}
+        if component:
+            extras['component'] = component
         if proxy_role:
             extras['proxyRole'] = proxy_role
         if instances:
@@ -143,9 +150,27 @@ def write_gltf(meshes, out_stem, glb=False, part_name=None):
                            'primitives': [prim],
                            'extras': extras})
         for instance in instances:
-            nodes.append({'name': instance.get('name') or node_name,
-                          'mesh': len(meshes_out) - 1,
-                          'matrix': instance['matrix']})
+            node = {'name': instance.get('name') or node_name,
+                    'mesh': len(meshes_out) - 1,
+                    'matrix': instance['matrix']}
+            if component:
+                extras = {'component': component}
+                parent = (instance_parent_by_mesh or {}).get(id(m))
+                if parent:
+                    extras['parentComponent'] = parent
+                occurrence_index = instance.get('occurrenceIndex')
+                if occurrence_index is not None:
+                    extras['instanceIndex'] = int(occurrence_index)
+                else:
+                    instance_name = instance.get('name') or ''
+                    if '#' in instance_name:
+                        try:
+                            extras['instanceIndex'] = int(
+                                instance_name.rsplit('#', 1)[1])
+                        except ValueError:
+                            pass
+                node['extras'] = extras
+            nodes.append(node)
         records.append((meshes_out[-1], render_pts, render_tris))
 
     views, accessors, byteEnd = [], [], 0

@@ -20,6 +20,7 @@ from threading import Lock
 
 ProgressCallback = Callable[[str, str], None]
 ArtifactCallback = Callable[[str, str, list[dict]], None]
+ReferenceCallback = Callable[[str, list[str]], None]
 
 SKIP_STAT_KEYS = ("skipped_hidden", "dropped_translucent",
                   "dropped_undisplayed")
@@ -33,6 +34,8 @@ class ConversionContext:
         self.cache: dict[str, list[dict]] = {}
         self.inflight: dict[str, Future] = {}
         self.reports: dict[str, list[dict]] = {}
+        self.component_by_mesh: dict[int, str] = {}
+        self.instance_parent_by_mesh: dict[int, str] = {}
         self.stats: dict[str, int] = {key: 0 for key in SKIP_STAT_KEYS}
 
 

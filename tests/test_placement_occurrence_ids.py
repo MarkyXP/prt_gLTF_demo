@@ -1,0 +1,38 @@
+"""Verify stable per-component occurrence indices in placement bundles."""
+
+import unittest
+from unittest.mock import patch
+
+from application.placement import placement_bundle
+
+
+class PlacementOccurrenceIdTests(unittest.TestCase):
+    def test_repeated_component_frames_get_distinct_occurrence_indices(self):
+        family_key = ("wheel",)
+        frame = {
+            "R": ((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+            "t": (0, 0, 0),
+        }
+        with (
+            patch("application.placement.prt_jt.open_prt", return_value={}),
+            patch("application.placement.child_extent_mm", return_value=None),
+            patch(
+                "application.placement.assembly_pairing.pair_instances",
+                return_value=({family_key: "wheel"}, []),
+            ),
+        ):
+            bundle, _notes = placement_bundle(
+                ["wheel"],
+                {"wheel": [{"t": {"pts": [], "tris": []}}]},
+                {"wheel": "wheel.prt"},
+                [(family_key, [frame, frame])],
+            )
+
+        self.assertEqual(
+            [instance["occurrenceIndex"] for instance in bundle[0]["instances"]],
+            [0, 1],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

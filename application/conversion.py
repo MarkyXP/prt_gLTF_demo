@@ -26,14 +26,17 @@ from color_index import body_translucency, part_colour_index
 from .config import conversion_workers
 from .geometry import mesh_collection
 from .references import copy_referenced_parts
-from .resolver import ArtifactCallback, convert_part_path
+from .resolver import ArtifactCallback, ReferenceCallback, convert_part_path
 
 
 LOGGER = logging.getLogger(__name__)
 ProgressCallback = Callable[[str, str], None]
 
 
-def _collection_to_glb(collection: list[dict], part_name: str) -> bytes:
+def _collection_to_glb(collection: list[dict], part_name: str,
+                        component_by_mesh: dict[int, str] | None = None,
+                        instance_parent_by_mesh: dict[int, str] | None = None
+                        ) -> bytes:
     """Serialize one completed collection to an in-memory GLB artifact.
 
     > example
@@ -42,14 +45,18 @@ def _collection_to_glb(collection: list[dict], part_name: str) -> bytes:
     """
     with tempfile.TemporaryDirectory() as temp_dir:
         stem = os.path.join(temp_dir, "part")
-        prt_jt.write_gltf(collection, stem, glb=True, part_name=part_name)
+        prt_jt.write_gltf(
+            collection, stem, glb=True, part_name=part_name,
+            component_by_mesh=component_by_mesh,
+            instance_parent_by_mesh=instance_parent_by_mesh)
         return Path(stem + ".glb").read_bytes()
 
 
 def convert_to_glb(data: bytes, part_name: str | None = None,
                    extra_parts: list[tuple[str, bytes]] | None = None,
                    progress: ProgressCallback | None = None,
-                   artifact: ArtifactCallback | None = None):
+                   artifact: ArtifactCallback | None = None,
+                   on_references: ReferenceCallback | None = None):
     """Convert .prt bytes to ``(glb_bytes, stats)``.
 
     > example
@@ -95,7 +102,7 @@ def convert_to_glb(data: bytes, part_name: str | None = None,
         collection = convert_part_path(
             source, resolution=resolution, source_name=source_name,
             progress=progress, artifact=artifact,
-            parallel_workers=workers)
+            parallel_workers=workers, on_references=on_references)
         timings["decode_ms"] = round(
             (time.perf_counter() - step_started) * 1000, 1)
         LOGGER.info(
@@ -108,7 +115,11 @@ def convert_to_glb(data: bytes, part_name: str | None = None,
     step_started = time.perf_counter()
     with tempfile.TemporaryDirectory() as temp_dir:
         stem = os.path.join(temp_dir, "part")
-        prt_jt.write_gltf(collection, stem, glb=True, part_name=part_name)
+        prt_jt.write_gltf(
+            collection, stem, glb=True, part_name=part_name,
+            component_by_mesh=resolution.get("component_by_mesh"),
+            instance_parent_by_mesh=resolution.get(
+                "instance_parent_by_mesh"))
         glb = Path(stem + ".glb").read_bytes()
     timings["serialize_ms"] = round(
         (time.perf_counter() - step_started) * 1000, 1)
@@ -174,12 +185,20 @@ def convert_to_files(source: str | Path, output: str | Path):
     if output.suffix.lower() == ".glb":
         with tempfile.TemporaryDirectory() as temp_dir:
             stem = os.path.join(temp_dir, "part")
-            prt_jt.write_gltf(collection, stem, glb=True, part_name=part_name)
+            prt_jt.write_gltf(
+                collection, stem, glb=True, part_name=part_name,
+                component_by_mesh=resolution.get("component_by_mesh"),
+                instance_parent_by_mesh=resolution.get(
+                    "instance_parent_by_mesh"))
             output.write_bytes(Path(stem + ".glb").read_bytes())
         written = [output]
     else:
         stem = str(output.with_suffix(""))
-        prt_jt.write_gltf(collection, stem, glb=False, part_name=part_name)
+        prt_jt.write_gltf(
+            collection, stem, glb=False, part_name=part_name,
+            component_by_mesh=resolution.get("component_by_mesh"),
+            instance_parent_by_mesh=resolution.get(
+                "instance_parent_by_mesh"))
         written = [Path(stem + ".gltf"), Path(stem + ".bin")]
     for assembly in resolution["assemblies"]:
         print("assembly=%s proxy=%s resolved=%d/%d missing=%s" % (

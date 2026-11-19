@@ -28,6 +28,7 @@ from .accounting import (
     ProgressCallback,
     count_skip,
     publish_skip_counts,
+    ReferenceCallback,
 )
 from .display import drop_undisplayed_bodies, paint_body_display
 from ..geometry import is_proxy_collection, mark_proxy, mesh_collection
@@ -58,7 +59,9 @@ def convert_part_path(path: str | Path, seen: set[str] | None = None,
                       artifact: ArtifactCallback | None = None,
                       parallel_workers: int = 2,
                       parallel_depth: int = 0,
-                      _context: ConversionContext | None = None) -> list[dict]:
+                      _context: ConversionContext | None = None,
+                      on_references: ReferenceCallback | None = None
+                      ) -> list[dict]:
     """Convert one part, sharing completed work across parallel branches.
 
     > example
@@ -94,8 +97,10 @@ def convert_part_path(path: str | Path, seen: set[str] | None = None,
             source_name=source_name, progress=progress,
             artifact=artifact,
             parallel_workers=parallel_workers,
-            parallel_depth=parallel_depth, context=context)
+            parallel_depth=parallel_depth, context=context,
+            on_references=on_references)
     except BaseException as error:
+        _report(progress, "failed", source_name or resolved_path.name)
         with context.lock:
             context.inflight.pop(key, None)
             future.set_exception(error)
@@ -108,6 +113,12 @@ def convert_part_path(path: str | Path, seen: set[str] | None = None,
         context.inflight.pop(key, None)
         future.set_result(result)
     if owns_context:
+        if isinstance(resolution, dict):
+            with context.lock:
+                resolution["component_by_mesh"] = dict(
+                    context.component_by_mesh)
+                resolution["instance_parent_by_mesh"] = dict(
+                    context.instance_parent_by_mesh)
         publish_skip_counts(context, resolution)
     return result
 
@@ -119,7 +130,9 @@ def _convert_part_path(path: str | Path, seen: set[str],
                        artifact: ArtifactCallback | None,
                        parallel_workers: int,
                        parallel_depth: int,
-                       context: ConversionContext) -> list[dict]:
+                       context: ConversionContext,
+                       on_references: ReferenceCallback | None = None
+                       ) -> list[dict]:
     """Resolve embedded JT geometry first, deferring Parasolid when possible.
 
     > example
@@ -142,6 +155,8 @@ def _convert_part_path(path: str | Path, seen: set[str],
     step_started = time.perf_counter()
     roots = reference_roots(data, path.parent)
     ref_names = meaningful_part_references(data, logical_name)
+    if on_references is not None:
+        on_references(logical_name, ref_names)
     _report(progress, "started", logical_name)
     suppressed = suppressed_child_names(data)
 
@@ -161,6 +176,12 @@ def _convert_part_path(path: str | Path, seen: set[str],
         _report(progress, "completed", logical_name)
         return result
 
+    def remember_component(meshes: list[dict], component_name: str):
+        with context.lock:
+            for mesh in meshes:
+                context.component_by_mesh.setdefault(
+                    id(mesh), component_name)
+
     primary = None
     parasolid_collection = []
 
@@ -172,6 +193,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
         except RuntimeError as error:
             primary = error
             collection = []
+        remember_component(collection, logical_name)
         LOGGER.info(
             "part=%s step=parasolid elapsed=%.3fs meshes=%d total=%.3fs",
             logical_name, time.perf_counter() - step_started,
@@ -191,6 +213,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
             logical_name, dropped_undisplayed)
     jt_collection, dropped_transparent = paint_body_display(
         str(path), jt_collection)
+    remember_component(jt_collection, logical_name)
     if dropped_transparent:
         count_skip(context, "dropped_translucent", dropped_transparent)
         LOGGER.info(
@@ -253,7 +276,8 @@ def _convert_part_path(path: str | Path, seen: set[str],
                 reference, seen=set(seen), resolution=child_resolution,
                 progress=progress, artifact=artifact,
                 parallel_workers=parallel_workers,
-                parallel_depth=parallel_depth + 1, _context=context)
+                parallel_depth=parallel_depth + 1, _context=context,
+                on_references=on_references)
         except RuntimeError:
             child = []
         child_reports = context.reports.get(str(reference.resolve()).lower(), [])
@@ -320,6 +344,7 @@ def _convert_part_path(path: str | Path, seen: set[str],
             continue
 
         stem = reference_basename(ref_name)
+        remember_component(child, ref_name)
         resolved_meshes[stem] = child
         resolved_paths[stem] = reference
         resolved_names.append(ref_name)
@@ -346,6 +371,15 @@ def _convert_part_path(path: str | Path, seen: set[str],
             extref_names=(structure or {}).get("extref_names"))
     else:
         bundle, pair_notes = None, []
+    for entry in bundle or ():
+        instances = entry.get("instances") or []
+        if instances:
+            instance_name = instances[0].get("name")
+            if instance_name:
+                remember_component(
+                    [entry], str(instance_name).rsplit("#", 1)[0])
+                with context.lock:
+                    context.instance_parent_by_mesh[id(entry)] = logical_name
     if bundle:
         append_assembly(
             resolution, logical_name, ref_names, resolved_names,

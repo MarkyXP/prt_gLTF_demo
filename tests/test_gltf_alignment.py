@@ -11,6 +11,37 @@ from jt.gltf_writer import write_gltf
 
 
 class BufferAlignmentTests(unittest.TestCase):
+    def test_component_names_are_written_to_mesh_nodes(self):
+        triangle = {"pts": [(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+                    "tris": [(0, 1, 2)]}
+        plain_mesh = {"t": triangle}
+        instance_mesh = {
+            "t": triangle,
+            "instances": [{
+                "name": "valve#0",
+                "occurrenceIndex": 1,
+                "matrix": [
+                    1, 0, 0, 0, 0, 1, 0, 0,
+                    0, 0, 1, 0, 0, 0, 0, 1,
+                ],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            document = write_gltf(
+                [plain_mesh, instance_mesh],
+                str(Path(directory) / "components"),
+                component_by_mesh={
+                    id(plain_mesh): "shaft.prt",
+                    id(instance_mesh): "valve.prt",
+                },
+                instance_parent_by_mesh={id(instance_mesh): "car.prt"})
+
+        nodes = {node["name"]: node for node in document["nodes"]}
+        self.assertEqual(nodes["part-0"]["extras"]["component"], "shaft.prt")
+        self.assertEqual(nodes["valve#0"]["extras"]["component"], "valve.prt")
+        self.assertEqual(nodes["valve#0"]["extras"]["parentComponent"], "car.prt")
+        self.assertEqual(nodes["valve#0"]["extras"]["instanceIndex"], 1)
+
     def test_consecutive_meshes_preserve_data_and_four_byte_alignment(self):
         """Odd 16-bit index counts must not misalign the next mesh.
 
