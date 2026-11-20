@@ -235,13 +235,24 @@ def ambiguous_opaque_children(families, stems, roster=None, extref_names=()):
     parent supplies multiple candidate children without a FastLoad roster or
     exact EXTREF join, selecting one by filename order is not reliable.
     """
+    extref_names = extref_names or ()
     roster_has_data = bool(roster and (roster.get("prototypes")
                                        or roster.get("uuids")))
+    candidate_names = {
+        str(stem).replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        for stem in stems
+    }
+    relevant_extrefs = {
+        str(name).replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        for name in extref_names
+        if str(name).replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        in candidate_names
+    }
     return (
         bool(families)
         and len(stems) > 1
         and not roster_has_data
-        and not extref_names
+        and not relevant_extrefs
         and all(
             key[0] == "conn"
             and all(not frame.get("child_name") and not frame.get("uuid")

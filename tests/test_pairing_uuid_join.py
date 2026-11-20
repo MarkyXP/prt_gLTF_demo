@@ -103,6 +103,25 @@ class RosterJoinTests(unittest.TestCase):
         self.assertEqual(assignments, {})
         self.assertTrue(any("ambiguous" in note for note in notes))
 
+    def test_self_only_extref_does_not_authorize_opaque_child(self):
+        families = [(("conn", b"opaque"), [frame()])]
+        children = [("first.prt", (0.0, 0.0, 0.0)),
+                    ("second.prt", (0.0, 0.0, 0.0))]
+        assignments, notes = assembly_pairing.pair_instances(
+            families, children,
+            extref_names=["parent.prt"])
+        self.assertEqual(assignments, {})
+        self.assertTrue(any("ambiguous" in note for note in notes))
+
+    def test_none_extref_names_is_treated_as_missing_metadata(self):
+        families = [(("conn", b"opaque"), [frame()])]
+        children = [("first.prt", (0.0, 0.0, 0.0)),
+                    ("second.prt", (0.0, 0.0, 0.0))]
+        self.assertTrue(
+            assembly_pairing.ambiguous_opaque_children(
+                families, [name for name, _extent in children],
+                extref_names=None))
+
 
 if __name__ == "__main__":
     unittest.main()

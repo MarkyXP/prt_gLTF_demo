@@ -21,11 +21,13 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
+from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
 
 from .config import BASE_DIR
 from .conversion import _collection_to_glb, convert_to_glb
@@ -36,6 +38,21 @@ from .references import reference_roots, reference_tree
 
 LOGGER = logging.getLogger(__name__)
 _conversion_jobs: dict[str, dict] = {}
+
+
+class FrontendLogEvent(BaseModel):
+    """Bounded browser diagnostic payload accepted by the logging endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    level: Literal["error", "warning"]
+    message: str = Field(min_length=1, max_length=1200)
+    stack: str | None = Field(default=None, max_length=6000)
+    source: str | None = Field(default=None, max_length=500)
+    line: int | None = Field(default=None, ge=0, le=10_000_000)
+    column: int | None = Field(default=None, ge=0, le=10_000_000)
+    job_id: str | None = Field(default=None, max_length=64)
+    part: str | None = Field(default=None, max_length=255)
 
 
 def _metadata_for_client(job_id: str, info: dict) -> dict:
@@ -197,6 +214,27 @@ def index():
       -> 200 with the viewer markup from static/index.html
     """
     return FileResponse(BASE_DIR / "static" / "index.html")
+
+
+@app.post("/client-logs", status_code=204)
+async def client_logs(event: FrontendLogEvent, request: Request):
+    """Write bounded browser error reports into the application log."""
+    level = logging.ERROR if event.level == "error" else logging.WARNING
+    LOGGER.log(
+        level,
+        "frontend level=%s job=%s part=%r source=%r location=%s:%s "
+        "message=%r stack=%r user_agent=%r",
+        event.level,
+        event.job_id or "-",
+        event.part or "-",
+        event.source or "-",
+        event.line if event.line is not None else "-",
+        event.column if event.column is not None else "-",
+        event.message,
+        event.stack or "",
+        request.headers.get("user-agent", "")[:300],
+    )
+    return Response(status_code=204)
 
 
 @app.post("/reindex")

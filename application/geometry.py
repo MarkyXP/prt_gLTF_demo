@@ -78,6 +78,11 @@ def _inherit_metadata(entry: dict, raw_entries: list[dict]) -> dict:
                          if item.get("material") is not None), None)
         if material is not None:
             entry["material"] = material
+    if "lsgPropertyKeys" not in entry:
+        keys = next((item.get("lsgPropertyKeys") for item in raw_entries
+                     if item.get("lsgPropertyKeys") is not None), None)
+        if keys is not None:
+            entry["lsgPropertyKeys"] = keys
     return entry
 
 
@@ -176,8 +181,10 @@ def mesh_collection(data: bytes, part_path=None) -> list[dict]:
                 "color": triangle_mesh.get("color"),
                 "material": triangle_mesh.get("material"),
                 "doubleSided": triangle_mesh.get("doubleSided", False),
+                "lsgPropertyKeys": mesh.get("lsgPropertyKeys", ()),
             })
-    if part_path is not None and data[:4] == b"SPLM":
+    if part_path is not None and (
+            data[:4] == b"SPLM" or data[:8] == prt_jt.OLE_MAGIC):
         try:
             from converter.face_colour import decorate_colour_mesh
             coloured = decorate_colour_mesh(part_path)
