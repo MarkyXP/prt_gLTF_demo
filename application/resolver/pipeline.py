@@ -30,9 +30,14 @@ from .accounting import (
     publish_skip_counts,
     ReferenceCallback,
 )
-from .display import drop_undisplayed_bodies, paint_body_display
+from .display import (
+    drop_unassociated_envelope_boxes,
+    drop_undisplayed_bodies,
+    paint_body_display,
+)
 from ..geometry import is_proxy_collection, mark_proxy, mesh_collection
 from ..placement import (
+    ambiguous_child_placement,
     assembly_structure,
     placement_bundle,
     placement_families,
@@ -40,7 +45,13 @@ from ..placement import (
 )
 from ..reference_index import reference_basename
 from ..references import find_named_part, meaningful_part_references, reference_roots
-from ..suppression import is_suppressed_child, suppressed_child_names
+from ..suppression import (
+    early_hidden_child_names,
+    external_reference_names,
+    is_external_reference_child,
+    is_suppressed_child,
+    suppressed_child_names,
+)
 from .status import append_assembly, record_rmfastload
 
 
@@ -158,7 +169,12 @@ def _convert_part_path(path: str | Path, seen: set[str],
     if on_references is not None:
         on_references(logical_name, ref_names)
     _report(progress, "started", logical_name)
-    suppressed = suppressed_child_names(data)
+    suppressed = (
+        frozenset(suppressed_child_names(data))
+        | early_hidden_child_names(data, ref_names)
+    )
+    external_names = external_reference_names(data)
+    own_artifact_streamed = False
 
     def finish(result: list[dict], includes_children: bool = False) -> list[dict]:
         """Complete one part, streaming artifacts for its own geometry.
@@ -171,19 +187,20 @@ def _convert_part_path(path: str | Path, seen: set[str],
         > finish(collection) -> collection; emits an artifact because the
         > result holds this part's own geometry, not resolved children
         """
-        if artifact is not None and result and not includes_children:
+        if (artifact is not None and result and not includes_children
+                and not own_artifact_streamed):
             artifact(str(path), logical_name, result)
         _report(progress, "completed", logical_name)
         return result
+
+    primary = None
+    parasolid_collection = []
 
     def remember_component(meshes: list[dict], component_name: str):
         with context.lock:
             for mesh in meshes:
                 context.component_by_mesh.setdefault(
                     id(mesh), component_name)
-
-    primary = None
-    parasolid_collection = []
 
     def run_parasolid():
         nonlocal primary
@@ -206,11 +223,17 @@ def _convert_part_path(path: str | Path, seen: set[str],
     record_rmfastload(resolution, logical_name, path, data, jt_collection)
     jt_collection, dropped_undisplayed = drop_undisplayed_bodies(
         str(path), jt_collection)
+    jt_collection, dropped_envelopes = drop_unassociated_envelope_boxes(
+        str(path), jt_collection)
     if dropped_undisplayed:
         count_skip(context, "dropped_undisplayed", dropped_undisplayed)
         LOGGER.info(
             "part=%s step=jt result=dropped-undisplayed meshes=%d",
             logical_name, dropped_undisplayed)
+    if dropped_envelopes:
+        LOGGER.info(
+            "part=%s step=jt result=dropped-unassociated-envelope meshes=%d",
+            logical_name, dropped_envelopes)
     jt_collection, dropped_transparent = paint_body_display(
         str(path), jt_collection)
     remember_component(jt_collection, logical_name)
@@ -258,6 +281,14 @@ def _convert_part_path(path: str | Path, seen: set[str],
             raise primary
         return finish([])
 
+    # Publish this assembly's own geometry before descending into referenced
+    # parts. Child conversion still performs the full reference scan and
+    # resolves in the existing order; this only changes progressive rendering
+    # priority.
+    if artifact is not None and collection and not is_proxy:
+        artifact(str(path), logical_name, collection)
+        own_artifact_streamed = True
+
     referenced = []
     resolved_names = []
     missing_names = []
@@ -268,6 +299,11 @@ def _convert_part_path(path: str | Path, seen: set[str],
     structure = assembly_structure(data) if families else None
     resolved_meshes = {}
     resolved_paths = {}
+    ambiguous_children = ambiguous_child_placement(
+        families,
+        roster=(structure or {}).get("roster"),
+        extref_names=(structure or {}).get("extref_names"),
+        stems=ref_names)
 
     def resolve_child(ref_name: str, reference: Path):
         child_resolution = {"assemblies": []}
@@ -286,7 +322,17 @@ def _convert_part_path(path: str | Path, seen: set[str],
     candidates = []
     for ref_name in ref_names:
         child_started = time.perf_counter()
-        if is_suppressed_child(ref_name, suppressed):
+        if ambiguous_children:
+            skipped_hidden.append(ref_name)
+            count_skip(context, "skipped_hidden")
+            LOGGER.info(
+                "part=%s step=child name=%s result=ambiguous-placement-skip "
+                "total=%.3fs",
+                logical_name, ref_name, time.perf_counter() - started)
+            continue
+        if is_suppressed_child(ref_name, suppressed) or \
+                is_external_reference_child(
+                    ref_name, external_names, direct_jt):
             skipped_hidden.append(ref_name)
             count_skip(context, "skipped_hidden")
             LOGGER.info(
@@ -380,7 +426,9 @@ def _convert_part_path(path: str | Path, seen: set[str],
                     [entry], str(instance_name).rsplit("#", 1)[0])
                 with context.lock:
                     context.instance_parent_by_mesh[id(entry)] = logical_name
-    if bundle:
+    if bundle is not None:
+        if direct_jt:
+            bundle = jt_collection + bundle
         append_assembly(
             resolution, logical_name, ref_names, resolved_names,
             missing_names, nested_missing, skipped_hidden,

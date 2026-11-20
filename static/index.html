@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <title>.prt to glTF converter</title>
-<link rel="stylesheet" href="/static/styles.css?v=component-visibility-2">
+<link rel="stylesheet" href="/static/styles.css?v=component-visibility-4">
 <script type="importmap">
 {
   "imports": {
@@ -24,7 +24,10 @@
   <div id="stats">Ready.</div>
   <progress id="progress" max="1" value="0" hidden></progress>
   <section id="components">
-    <div id="components-title">Components</div>
+    <div id="components-header">
+      <div id="components-title">Components</div>
+      <button id="toggle-all" type="button" disabled>Show all</button>
+    </div>
     <div id="refs" aria-live="polite"></div>
   </section>
   <section id="part-info" hidden>
@@ -40,6 +43,8 @@
   </div>
   <a id="download" download>Download converted .glb</a>
   <div id="render"></div>
+  <div id="side-resizer" role="separator" aria-orientation="vertical"
+       aria-label="Resize sidebar" tabindex="0"></div>
 </div>
 <div id="view">
   <div id="display-style">
@@ -58,6 +63,6 @@
   </div>
 </div>
 
-<script type="module" src="/static/app.js?v=component-visibility-4"></script>
+<script type="module" src="/static/app.js?v=component-visibility-10"></script>
 </body>
 </html>

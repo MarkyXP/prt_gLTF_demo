@@ -25,8 +25,13 @@ import parasolid
 import prt_jt
 
 from .config import BASE_DIR
-from .reference_index import find_sub_assembly
-from .suppression import is_suppressed_child, suppressed_child_names
+from .reference_index import find_sub_assembly, reference_basename
+from .suppression import (
+    early_hidden_child_names,
+    external_reference_names,
+    is_suppressed_child,
+    suppressed_child_names,
+)
 
 
 GENERIC_PART_REFERENCES = {
@@ -139,7 +144,10 @@ def reference_tree(name: str, data: bytes, roots: list[str],
     if key in seen:
         return node
     seen.add(key)
+    external_names = external_reference_names(data)
     for child_name in meaningful_part_references(data, name):
+        if reference_basename(child_name).casefold() in external_names:
+            continue
         child = {"name": child_name, "found": False, "children": []}
         match = find_named_part(child_name, roots, parent_path=parent_path)
         if match:
@@ -168,9 +176,15 @@ def copy_referenced_parts(data: bytes, target_dir: str | os.PathLike,
     """
     copied = []
     roots = reference_roots(data)
-    suppressed = suppressed_child_names(data)
-    for name in meaningful_part_references(data, source_name):
-        if is_suppressed_child(name, suppressed):
+    ref_names = meaningful_part_references(data, source_name)
+    suppressed = (
+        frozenset(suppressed_child_names(data))
+        | early_hidden_child_names(data, ref_names)
+    )
+    external_names = external_reference_names(data)
+    for name in ref_names:
+        if (is_suppressed_child(name, suppressed)
+                or reference_basename(name).casefold() in external_names):
             continue
         path = find_named_part(
             name, roots, parent_path=Path(target_dir) / "part.prt")

@@ -17,7 +17,7 @@ simultaneous instance packing is feasible.  Ambiguous or infeasible
 pairings fail closed so callers keep the previous unplaced behaviour
 instead of rendering wrong geometry.
 """
-from .child_join import pair_instances
+from .child_join import ambiguous_opaque_children, pair_instances
 from .families import cluster_families, family_key, structured_frames
 from .frames import (
     FRAME_PREFIX_SCAN,
@@ -42,6 +42,7 @@ __all__ = [
     "FRAME_SUFFIX_SCAN",
     "NAME_ROW_SCAN",
     "cluster_families",
+    "ambiguous_opaque_children",
     "connector_id",
     "decode_matrix_atom",
     "family_key",

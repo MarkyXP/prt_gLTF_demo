@@ -33,6 +33,34 @@ class PlacementOccurrenceIdTests(unittest.TestCase):
             [0, 1],
         )
 
+    def test_unpaired_children_are_skipped_after_successful_assignment(self):
+        family_key = ("pump",)
+        frame = {
+            "R": ((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+            "t": (0, 0, 0),
+        }
+        with (
+            patch("application.placement.prt_jt.open_prt", return_value={}),
+            patch("application.placement.child_extent_mm", return_value=None),
+            patch(
+                "application.placement.assembly_pairing.pair_instances",
+                return_value=({family_key: "pump-a"}, []),
+            ),
+        ):
+            bundle, notes = placement_bundle(
+                ["pump-a", "pump-b"],
+                {
+                    "pump-a": [{"id": "placed"}],
+                    "pump-b": [{"id": "unplaced"}],
+                },
+                {"pump-a": "pump-a.prt", "pump-b": "pump-b.prt"},
+                [(family_key, [frame])],
+            )
+
+        self.assertEqual(len(bundle), 1)
+        self.assertEqual(bundle[0]["id"], "placed")
+        self.assertIn("pump-b: no feasible child; skipped unplaced", notes)
+
 
 if __name__ == "__main__":
     unittest.main()

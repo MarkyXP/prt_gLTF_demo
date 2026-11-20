@@ -27,6 +27,8 @@ import logging
 import math
 from collections import Counter
 
+from converter.jt.geometry import is_axis_aligned_box
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -165,6 +167,53 @@ def _match_body_bounds(collection, records):
     return {key: index for key, index in matches.items() if counts[index] == 1}
 
 
+def _linked_history_keys(path, collection, states, matches):
+    """Return linked-body pieces only for positively decoded hidden records.
+
+    The current Model History writer layout exposes linked-body records and
+    source labels but not a validated display-state atom. Unknown state must
+    remain visible; source names and body order are diagnostic only.
+    """
+    try:
+        from converter.model_history import linked_body_records
+        history = linked_body_records(path)
+    except Exception:
+        LOGGER.exception("Failed to read model history for %s", path)
+        return set()
+    hidden_records = [
+        record for record in history if record.visibility == "hidden"
+    ]
+    if not hidden_records or len(states) <= len(history):
+        return set()
+    offsets = [
+        key[1] - index
+        for key, index in matches.items()
+        if 1 <= index <= len(history) and isinstance(key[1], int)
+    ]
+    if not offsets:
+        return set()
+    counts = Counter(offsets)
+    offset, support = counts.most_common(1)[0]
+    if support < min(4, len(history)):
+        return set()
+    available = {
+        (entry.get("stream"), entry.get("jtPiece"))
+        for entry in collection
+    }
+    hidden_indices = [record.index + 1 for record in hidden_records]
+    keys = {
+        (stream, index + offset)
+        for stream, piece in available
+        for index in hidden_indices
+        if (stream, index + offset) in available
+    }
+    expected = len(hidden_indices) * len(
+        {entry.get("stream") for entry in collection})
+    if len(keys) < expected:
+        return set()
+    return keys
+
+
 def drop_undisplayed_bodies(path: str,
                             collection: list[dict]) -> tuple[list[dict], int]:
     """Remove JT pieces positively bound to non-displayed NX bodies.
@@ -188,14 +237,16 @@ def drop_undisplayed_bodies(path: str,
     hidden_indexes = {
         index for index, (_bounds, hidden) in enumerate(states) if hidden
     }
-    if not hidden_indexes:
-        return collection, 0
     records = [(index, None, bounds)
                for index, (bounds, _hidden) in enumerate(states)]
     exact = _match_body_bounds(collection, records) or {}
+    history_keys = _linked_history_keys(path, collection, states, exact)
+    if not hidden_indexes and not history_keys:
+        return collection, 0
     hidden_keys = {
         key for key, index in exact.items() if index in hidden_indexes
     }
+    hidden_keys |= history_keys
     unmatched_records = sorted(hidden_indexes - set(exact.values()))
     if unmatched_records:
         hidden_keys |= _match_envelope_bodies(
@@ -205,6 +256,47 @@ def drop_undisplayed_bodies(path: str,
     kept = [
         entry for entry in collection
         if (entry.get("stream"), entry.get("jtPiece")) not in hidden_keys
+    ]
+    return kept, len(collection) - len(kept)
+
+
+def drop_unassociated_envelope_boxes(
+    path: str, collection: list[dict]
+) -> tuple[list[dict], int]:
+    """Drop unassociated box meshes when visible body metadata anchors a stream.
+
+    An exact body-bounds match establishes which meshes represent displayed
+    bodies. Unmatched boxes in those same streams are treated as envelope
+    geometry; without that positive match the collection is left alone.
+    """
+    if not any(is_axis_aligned_box(entry.get("t", {}))
+               for entry in collection):
+        return collection, 0
+    try:
+        from body_display import body_display_records
+        states = body_display_records(str(path))
+    except Exception:
+        LOGGER.exception("Failed to read body display state for %s", path)
+        return collection, 0
+    if not states:
+        return collection, 0
+
+    records = [(index, None, bounds)
+               for index, (bounds, _hidden) in enumerate(states)]
+    matches = _match_body_bounds(collection, records) or {}
+    visible_streams = {
+        key[0] for key, index in matches.items() if not states[index][1]
+    }
+    if not visible_streams:
+        return collection, 0
+
+    kept = [
+        entry for entry in collection
+        if not (
+            entry.get("stream") in visible_streams
+            and (entry.get("stream"), entry.get("jtPiece")) not in matches
+            and is_axis_aligned_box(entry.get("t", {}))
+        )
     ]
     return kept, len(collection) - len(kept)
 

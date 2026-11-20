@@ -6,6 +6,8 @@ Inputs:
 Outputs:
   * Child names flagged suppressed (case-insensitive) in the parent's
     CONFG-layer per-occurrence display records.
+  * A conservative set of children that can be proven hidden from complete
+    placement display rows before any child file is opened.
 
 The per-child suppression flag pair lives in ``/Root/UG_PART/UG_PART``
 (converter/suppress_state.py: 00 = visible, 01 = suppressed, keyed by
@@ -17,11 +19,59 @@ component.
 """
 from __future__ import annotations
 
+import re
+
 from .config import BASE_DIR  # noqa: F401  (loads the bundled library path)
 
 from .reference_index import reference_basename  # noqa: E402
 
 import suppress_state  # noqa: E402
+import row_state  # noqa: E402
+import prt_jt  # noqa: E402
+
+
+def external_reference_names(data: bytes) -> frozenset[str]:
+    """Return part names listed by NX's ExternalReferences stream.
+
+    These are interpart/reference-geometry links, not assembly occurrences.
+    NX stores the names in a compact legacy table, so only complete ``.prt``
+    tokens are accepted.
+
+    > example
+    > external_reference_names(b"...a_oring_template.prt...")
+    > -> frozenset({"a_oring_template.prt"})
+    """
+    try:
+        streams = prt_jt.open_prt_bytes(data)
+    except Exception:
+        return frozenset()
+    names = set()
+    for stream_name, stream in streams.items():
+        if "externalreferences" not in stream_name.casefold():
+            continue
+        names.update(
+            match.group().decode("latin1").casefold()
+            for match in re.finditer(
+                rb"[A-Za-z0-9_.-]+\.prt", stream.data, re.IGNORECASE
+            )
+        )
+    return frozenset(names)
+
+
+def is_external_reference_child(name: str,
+                                external_names: frozenset[str],
+                                parent_has_direct_geometry: bool) -> bool:
+    """Return whether a direct-JT child is NX reference geometry.
+
+    > example
+    > is_external_reference_child(
+    ...     "a_oring_template.prt", frozenset({"a_oring_template.prt"}), True)
+    ... -> True
+    """
+    return (
+        parent_has_direct_geometry
+        and reference_basename(name).casefold() in external_names
+    )
 
 
 def suppressed_child_names(data: bytes) -> frozenset[str]:
@@ -50,3 +100,30 @@ def is_suppressed_child(name: str, suppressed: frozenset[str]) -> bool:
       -> True
     """
     return bool(suppressed) and reference_basename(name).casefold() in suppressed
+
+
+def early_hidden_child_names(data: bytes,
+                             ref_names: list[str]) -> frozenset[str]:
+    """Return children provably hidden before child resolution begins.
+
+    The placement rows are occurrence records, so they are only safe to use
+    as a name-independent early gate when they cover every referenced
+    occurrence and every row is blanked.  Partial, missing, or ambiguous
+    metadata fails open and leaves those children loadable for later checks.
+
+    > example
+    > early_hidden_child_names(data, ["cap.prt"]) -> frozenset({"cap.prt"})
+    """
+    if not ref_names:
+        return frozenset()
+    try:
+        streams = prt_jt.open_prt_bytes(data)
+        rows = row_state.placement_rows(streams)
+    except (IndexError, KeyError, TypeError, ValueError, RuntimeError):
+        return frozenset()
+    if (len(rows) != len(ref_names)
+            or not rows
+            or not all(row.get("hidden") for row in rows)):
+        return frozenset()
+    return frozenset(
+        reference_basename(name).casefold() for name in ref_names)

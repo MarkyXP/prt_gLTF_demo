@@ -95,9 +95,13 @@ def cluster_families(data, frames):
     """
     ordered_frames = sorted(frames, key=lambda frame: frame["off"])
     for index, frame in enumerate(ordered_frames):
-        frame["connector"] = connector_id(data, frame)
-        next_offset = (ordered_frames[index + 1]["off"]
-                       if index + 1 < len(ordered_frames) else None)
+        previous_end = (
+            ordered_frames[index - 1]["end"] if index else None)
+        next_offset = (
+            ordered_frames[index + 1]["off"]
+            if index + 1 < len(ordered_frames) else None)
+        frame["connector"] = connector_id(
+            data, frame, before=previous_end, after=next_offset)
         frame["child_name"] = frame_child_name(
             data, frame, limit=next_offset)
         frame["object_index"] = placement_object_index(data, frame)

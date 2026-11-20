@@ -185,6 +185,13 @@ def pair_instances(families, child_extents, roster=None, extref_names=()):
             notes.append("roster join produced no unique binding; using "
                          "family/geometry pairing")
 
+    if (not assignments
+            and ambiguous_opaque_children(families, stems, roster,
+                                           extref_names)):
+        notes.append("opaque connector families with multiple unnamed "
+                     "children are ambiguous; no child assigned")
+        return {}, notes
+
     for key, group in families:
         if key in assignments:
             continue
@@ -219,3 +226,26 @@ def pair_instances(families, child_extents, roster=None, extref_names=()):
         if key not in assignments:
             notes.append("family %s stayed unpaired" % (key,))
     return assignments, notes
+
+
+def ambiguous_opaque_children(families, stems, roster=None, extref_names=()):
+    """Whether child conversion should be skipped before lookup.
+
+    An opaque connector family has no child-name or UUID identity. When a
+    parent supplies multiple candidate children without a FastLoad roster or
+    exact EXTREF join, selecting one by filename order is not reliable.
+    """
+    roster_has_data = bool(roster and (roster.get("prototypes")
+                                       or roster.get("uuids")))
+    return (
+        bool(families)
+        and len(stems) > 1
+        and not roster_has_data
+        and not extref_names
+        and all(
+            key[0] == "conn"
+            and all(not frame.get("child_name") and not frame.get("uuid")
+                    for frame in group)
+            for key, group in families
+        )
+    )

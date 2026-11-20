@@ -67,7 +67,14 @@ def placement_families(data: bytes):
         frames = assembly_pairing.placement_frames(payload)
         records = s19_route_a.records(payload)
         scoped = assembly_pairing.structured_frames(records, frames)
-        return assembly_pairing.cluster_families(payload, scoped)
+        families = assembly_pairing.cluster_families(payload, scoped)
+        # Rigid matrices without an occurrence token are view/working-frame
+        # transforms, not component placements. Pairing them to a child
+        # duplicates that child at arbitrary locations.
+        return [
+            (key, group) for key, group in families
+            if key and key[0] != "none"
+        ]
     except Exception:
         return None
 
@@ -79,6 +86,13 @@ def placement_payload(data: bytes):
       -> the UG_PART/UG_PART payload bytes, or None when unavailable
     """
     return object_model_payload(data)
+
+
+def ambiguous_child_placement(families, roster=None, extref_names=(),
+                              stems=()):
+    """Whether child references lack enough metadata for safe placement."""
+    return assembly_pairing.ambiguous_opaque_children(
+        families, list(stems), roster=roster, extref_names=extref_names)
 
 
 def placement_bundle(stems: list[str], collections: dict[str, list[dict]],
@@ -229,13 +243,20 @@ def placement_bundle(stems: list[str], collections: dict[str, list[dict]],
                      % (key, len(instances), stem))
 
     assigned = set(assignments.values())
+    if not assignments:
+        notes.append("no child assignment; skipped all unplaced children")
+        return [], notes
     for stem in sorted(set(stems) - assigned):
         child_collection = collections.get(stem) or []
+        if not child_collection:
+            continue
+        if assignments:
+            notes.append("%s: no feasible child; skipped unplaced" % stem)
+            continue
         collection.extend(dict(entry) for entry in child_collection)
-        if child_collection:
-            notes.append("%s: no feasible child; rendered unplaced" % stem)
+        notes.append("%s: no feasible child; rendered unplaced" % stem)
     if not collection:
         notes.append("component pairing stayed ambiguous; rendered without "
-                     "per-instance placement")
-        return None, notes
+                     "per-instance placement; child geometry omitted")
+        return [], notes
     return collection, notes

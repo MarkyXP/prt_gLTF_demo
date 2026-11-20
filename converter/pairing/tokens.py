@@ -237,12 +237,14 @@ def frame_child_name(data, frame, limit=None):
     return None
 
 
-def connector_id(data, frame):
+def connector_id(data, frame, before=None, after=None):
     """Component-occurrence connector id of one placement frame.
 
     Child occurrences carry the ``e0 <id>`` token right after the frame;
     the base component serializes its connector immediately before its
-    frame instead.
+    frame instead. ``before`` and ``after`` bound the search to this frame's
+    byte interval when neighboring matrices share an object-model record;
+    without those bounds a later frame can borrow an earlier connector.
 
     > example
     >>> data = b"\\x00\\x00\\x00\\x01\\xe0\\x58\\x76\\xd4\\x6e\\x6b\\x03"
@@ -250,9 +252,14 @@ def connector_id(data, frame):
     >>> connector_id(data, frame)
     b'Xv\\xd4nk\\x03'
     """
-    after = data[frame["end"]:frame["end"] + FRAME_SUFFIX_SCAN]
-    keep = _scan_connector(after)
+    after_end = frame["end"] + FRAME_SUFFIX_SCAN
+    if after is not None:
+        after_end = min(after_end, after)
+    after_data = data[frame["end"]:after_end]
+    keep = _scan_connector(after_data)
     if keep:
         return keep
     start = max(0, frame["off"] - FRAME_PREFIX_SCAN)
+    if before is not None:
+        start = max(start, before)
     return _scan_connector(data[start:frame["off"]], from_before=True)

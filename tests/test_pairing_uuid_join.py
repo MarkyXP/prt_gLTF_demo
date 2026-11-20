@@ -94,6 +94,15 @@ class RosterJoinTests(unittest.TestCase):
             families, children)
         self.assertEqual(assignments, {("name", "child"): "child2.prt"})
 
+    def test_opaque_connector_with_multiple_children_fails_closed(self):
+        families = [(("conn", b"opaque"), [frame()])]
+        children = [("first.prt", (0.0, 0.0, 0.0)),
+                    ("second.prt", (0.0, 0.0, 0.0))]
+        assignments, notes = assembly_pairing.pair_instances(
+            families, children)
+        self.assertEqual(assignments, {})
+        self.assertTrue(any("ambiguous" in note for note in notes))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,9 @@ const reindex = document.getElementById('reindex');
 const dl = document.getElementById('download');
 const renderNote = document.getElementById('render');
 const refs = document.getElementById('refs');
+const toggleAll = document.getElementById('toggle-all');
+const side = document.getElementById('side');
+const sideResizer = document.getElementById('side-resizer');
 const partInfo = document.getElementById('part-info');
 const partPreview = document.getElementById('part-preview');
 const partPreviewDims = document.getElementById('part-preview-dims');
@@ -101,6 +104,67 @@ initProxyStyling({ scene: scene, camera: camera });
 initDisplayStyle();
 let current, url;
 let activeConversion;
+let titleTimer;
+let resizingSide = false;
+
+function setSideWidth(width) {
+  const minimum = 260;
+  const maximum = Math.max(minimum, window.innerWidth - 320);
+  side.style.width = Math.max(minimum, Math.min(maximum, width)) + 'px';
+  resize();
+}
+
+sideResizer.addEventListener('pointerdown', (event) => {
+  event.preventDefault();
+  resizingSide = true;
+  sideResizer.setPointerCapture(event.pointerId);
+  document.body.classList.add('resizing-side');
+});
+
+sideResizer.addEventListener('pointermove', (event) => {
+  if (!resizingSide) return;
+  setSideWidth(event.clientX);
+});
+
+const stopResizingSide = (event) => {
+  if (!resizingSide) return;
+  resizingSide = false;
+  if (event && sideResizer.hasPointerCapture(event.pointerId)) {
+    sideResizer.releasePointerCapture(event.pointerId);
+  }
+  document.body.classList.remove('resizing-side');
+};
+
+sideResizer.addEventListener('pointerup', stopResizingSide);
+sideResizer.addEventListener('pointercancel', stopResizingSide);
+sideResizer.addEventListener('keydown', (event) => {
+  const step = event.shiftKey ? 50 : 10;
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault();
+    setSideWidth(side.offsetWidth - step);
+  } else if (event.key === 'ArrowRight') {
+    event.preventDefault();
+    setSideWidth(side.offsetWidth + step);
+  }
+});
+
+function startTitleAnimation(fileName, conversion) {
+  clearInterval(titleTimer);
+  let dots = 1;
+  const update = () => {
+    if (activeConversion !== conversion) return;
+    document.title = 'glb | ' + fileName + '.'.repeat(dots);
+    dots = dots % 3 + 1;
+  };
+  update();
+  titleTimer = setInterval(update, 500);
+}
+
+function finishTitle(fileName, conversion) {
+  if (activeConversion !== conversion) return;
+  clearInterval(titleTimer);
+  document.title = 'glb | ' + fileName;
+}
 
 refs.addEventListener('change', (event) => {
   const checkbox = event.target;
@@ -114,6 +178,35 @@ refs.addEventListener('change', (event) => {
   if (checkbox.checked) activeConversion.hiddenOccurrences.delete(occurrenceId);
   else activeConversion.hiddenOccurrences.add(occurrenceId);
   applyComponentVisibility(current);
+  updateToggleAllButton();
+});
+
+function updateToggleAllButton() {
+  const checkboxes = Array.from(
+    refs.querySelectorAll('.component-visibility'));
+  const available = checkboxes.filter((checkbox) => !checkbox.disabled);
+  const allShown = available.length > 0
+    && available.every((checkbox) => checkbox.checked);
+  toggleAll.disabled = available.length === 0;
+  toggleAll.textContent = allShown ? 'Hide all' : 'Show all';
+}
+
+toggleAll.addEventListener('click', () => {
+  if (!activeConversion) return;
+  const checkboxes = Array.from(
+    refs.querySelectorAll('.component-visibility'))
+    .filter((checkbox) => !checkbox.disabled);
+  const showAll = checkboxes.some((checkbox) => !checkbox.checked);
+  refs.querySelectorAll('.component').forEach((row) => {
+    const checkbox = row.querySelector('.component-visibility');
+    const occurrenceId = row.dataset.occurrenceId;
+    if (!checkbox || checkbox.disabled || !occurrenceId) return;
+    checkbox.checked = showAll;
+    if (showAll) activeConversion.hiddenOccurrences.delete(occurrenceId);
+    else activeConversion.hiddenOccurrences.add(occurrenceId);
+  });
+  applyComponentVisibility(current);
+  updateToggleAllButton();
 });
 
 function componentIsVisible(key) {
@@ -124,6 +217,11 @@ function componentIsVisible(key) {
 
 function applyComponentVisibility(root) {
   if (!root || !activeConversion) return;
+  if (typeof root.traverse !== 'function') {
+    console.error('Cannot apply component visibility to a non-Three.js root',
+      root);
+    return;
+  }
   root.traverse((object) => {
     const occurrenceId = object.userData.componentOccurrenceId;
     if (occurrenceId) {
@@ -301,6 +399,7 @@ function convert(files) {
   activeConversion.componentKeys = new Set();
   activeConversion.occurrencesByComponent = new Map();
   const conversionState = activeConversion;
+  startTitleAnimation(file.name, conversionState);
   referenceRootName = file.name;
   referenceChildren.clear();
   knownMissingComponents.clear();
@@ -369,6 +468,7 @@ function convert(files) {
       const info = job.stats || {};
       const blob = new Blob([await result.arrayBuffer()], { type: 'model/gltf-binary' });
       const name = file.name.replace(/\.prt$/i, '') + '.glb';
+      finishTitle(file.name, conversionState);
       loader.load(
         URL.createObjectURL(blob),
         (gltf) => {
@@ -412,7 +512,10 @@ function convert(files) {
         (err) => { finish('Conversion finished but three.js could not render: ' + err); }
       );
     })
-    .catch((err) => { finish(String(err.message || err)); });
+    .catch((err) => {
+      finishTitle(file.name, conversionState);
+      finish(String(err.message || err));
+    });
   void lookupPromise;
 }
 
@@ -524,13 +627,16 @@ function renderComponentTree() {
     }
     occurrences.push(occurrenceId);
     const notFound = depth && knownMissingComponents.has(key);
+    if (notFound) activeConversion.hiddenOccurrences.add(occurrenceId);
     row.dataset.partName = key;
     row.dataset.occurrenceId = occurrenceId;
     row.dataset.notFound = notFound ? 'true' : 'false';
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.className = 'component-visibility';
-    checkbox.checked = !activeConversion.hiddenOccurrences.has(occurrenceId);
+    checkbox.checked = !notFound
+      && !activeConversion.hiddenOccurrences.has(occurrenceId);
+    checkbox.disabled = Boolean(notFound);
     checkbox.setAttribute('aria-label', 'Show ' + name);
     row.appendChild(checkbox);
     const label = document.createElement('span');
@@ -566,6 +672,7 @@ function renderComponentTree() {
     updateConversionProgress(activeConversion.latestState);
   }
   applyComponentVisibility(current);
+  updateToggleAllButton();
 }
 
 function updateConversionProgress(state) {
@@ -576,17 +683,31 @@ function updateConversionProgress(state) {
     .map(componentKey));
   const failedParts = new Set((state.failed_parts || [])
     .map(componentKey));
-  const current = componentKey(state.current);
+  const currentComponent = componentKey(state.current);
   let passed = 0;
   let failed = 0;
   let processed = 0;
+  let visibilityChanged = false;
   refs.querySelectorAll('.component').forEach((row) => {
     const name = row.dataset.partName;
-    const isActive = name === current;
+    const isActive = name === currentComponent;
     const isDone = completedParts.has(name);
     const isFailed = failedParts.has(name);
     const isMissing = missing.has(name) || isFailed
       || (row.dataset.notFound === 'true' && !isDone && !isActive);
+    const unavailable = !isActive && isMissing;
+    const checkbox = row.querySelector('.component-visibility');
+    const occurrenceId = row.dataset.occurrenceId;
+    if (checkbox) {
+      checkbox.disabled = unavailable;
+      checkbox.checked = !unavailable
+        && !activeConversion.hiddenOccurrences.has(occurrenceId);
+    }
+    if (unavailable
+        && !activeConversion.hiddenOccurrences.has(occurrenceId)) {
+      activeConversion.hiddenOccurrences.add(occurrenceId);
+      visibilityChanged = true;
+    }
     row.classList.toggle('active', isActive);
     row.classList.toggle('done',
       !isActive && !isMissing && !isFailed && isDone);
@@ -607,6 +728,8 @@ function updateConversionProgress(state) {
       row.setAttribute('aria-label', name + ' — pending');
     }
   });
+  if (visibilityChanged) applyComponentVisibility(current);
+  updateToggleAllButton();
   const total = refs.querySelectorAll('.component').length;
   progress.max = Math.max(total, 1);
   progress.value = Math.min(processed, progress.max);
