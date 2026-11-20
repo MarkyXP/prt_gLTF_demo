@@ -106,6 +106,65 @@ let current, url;
 let activeConversion;
 let titleTimer;
 let resizingSide = false;
+const recentFrontendReports = new Map();
+
+function reportFrontendError(message, error, location = {}) {
+  const detail = error instanceof Error
+    ? error.message : error == null ? '' : String(error);
+  const reportMessage = (detail ? message + ': ' + detail : message)
+    .slice(0, 1200);
+  const signature = [
+    reportMessage,
+    error instanceof Error ? error.stack || '' : '',
+    location.source || '',
+    location.line || '',
+    activeConversion && activeConversion.jobId || '',
+    activeConversion && activeConversion.fileName || '',
+  ].join('|');
+  const now = Date.now();
+  const previous = recentFrontendReports.get(signature);
+  if (previous && now - previous < 60000) return;
+  recentFrontendReports.set(signature, now);
+  if (recentFrontendReports.size > 100) {
+    recentFrontendReports.delete(recentFrontendReports.keys().next().value);
+  }
+  const payload = {
+    level: 'error',
+    message: reportMessage,
+    stack: error instanceof Error && error.stack
+      ? error.stack.slice(0, 6000) : null,
+    source: location.source ? location.source.slice(0, 500) : null,
+    line: Number.isInteger(location.line) ? location.line : null,
+    column: Number.isInteger(location.column) ? location.column : null,
+    job_id: activeConversion && activeConversion.jobId
+      ? activeConversion.jobId.slice(0, 64) : null,
+    part: activeConversion && activeConversion.fileName
+      ? activeConversion.fileName.slice(0, 255) : null,
+  };
+  fetch('/client-logs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    keepalive: true,
+  }).catch(() => {});
+}
+
+window.addEventListener('error', (event) => {
+  if (!(event instanceof ErrorEvent)) return;
+  reportFrontendError(event.message || 'Uncaught browser error', event.error, {
+    source: event.filename,
+    line: event.lineno,
+    column: event.colno,
+  });
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  reportFrontendError('Unhandled promise rejection', event.reason);
+});
+
+renderer.domElement.addEventListener('webglcontextlost', () => {
+  reportFrontendError('WebGL context lost');
+});
 
 function setSideWidth(width) {
   const minimum = 260;
@@ -181,6 +240,45 @@ refs.addEventListener('change', (event) => {
   updateToggleAllButton();
 });
 
+refs.addEventListener('click', (event) => {
+  const button = event.target;
+  if (!(button instanceof HTMLButtonElement) || !activeConversion) return;
+  const row = button.closest('.component');
+  if (!row) return;
+  const occurrenceId = row.dataset.occurrenceId;
+  if (!occurrenceId) return;
+  if (button.classList.contains('component-collapse')) {
+    const collapsed = activeConversion.collapsedOccurrences;
+    if (collapsed.has(occurrenceId)) collapsed.delete(occurrenceId);
+    else collapsed.add(occurrenceId);
+    const childList = row.nextElementSibling;
+    if (childList && childList.classList.contains('component-children')) {
+      childList.hidden = collapsed.has(occurrenceId);
+    }
+    updateToggleAllButton();
+  } else if (button.classList.contains('component-descendant-visibility')) {
+    const descendants = new Set([
+      occurrenceId,
+      ...descendantOccurrences(occurrenceId),
+    ]);
+    const rows = Array.from(refs.querySelectorAll('.component'))
+      .filter((childRow) => descendants.has(childRow.dataset.occurrenceId));
+    const available = rows.filter((childRow) =>
+      !childRow.querySelector('.component-visibility').disabled);
+    const show = available.some((childRow) =>
+      !childRow.querySelector('.component-visibility').checked);
+    for (const childRow of available) {
+      const checkbox = childRow.querySelector('.component-visibility');
+      const childOccurrenceId = childRow.dataset.occurrenceId;
+      checkbox.checked = show;
+      if (show) activeConversion.hiddenOccurrences.delete(childOccurrenceId);
+      else activeConversion.hiddenOccurrences.add(childOccurrenceId);
+    }
+    applyComponentVisibility(current);
+    updateToggleAllButton();
+  }
+});
+
 function updateToggleAllButton() {
   const checkboxes = Array.from(
     refs.querySelectorAll('.component-visibility'));
@@ -189,6 +287,58 @@ function updateToggleAllButton() {
     && available.every((checkbox) => checkbox.checked);
   toggleAll.disabled = available.length === 0;
   toggleAll.textContent = allShown ? 'Hide all' : 'Show all';
+  updateTreeControls();
+}
+
+function updateTreeControls() {
+  const rows = Array.from(refs.querySelectorAll('.component'));
+  const descendantVisibility = new Map();
+  for (const row of rows.reverse()) {
+    const occurrenceId = row.dataset.occurrenceId;
+    const collapsed = activeConversion.collapsedOccurrences.has(occurrenceId);
+    const collapseButton = row.querySelector('.component-collapse');
+    if (collapseButton) {
+      collapseButton.textContent = collapsed ? '▸' : '▾';
+      collapseButton.setAttribute('aria-expanded', String(!collapsed));
+      collapseButton.setAttribute('aria-label',
+        (collapsed ? 'Expand children of ' : 'Collapse children of ')
+        + row.dataset.componentName);
+      collapseButton.title = collapseButton.getAttribute('aria-label');
+    }
+
+    const visibilityButton = row.querySelector(
+      '.component-descendant-visibility');
+    const checkbox = row.querySelector('.component-visibility');
+    let available = 0;
+    let hidden = 0;
+    for (const childId of activeConversion.childOccurrences.get(occurrenceId)
+      || []) {
+      const state = descendantVisibility.get(childId);
+      if (state) {
+        available += state.available;
+        hidden += state.hidden;
+      }
+    }
+    if (!checkbox.disabled) {
+      available += 1;
+      if (!checkbox.checked) hidden += 1;
+    }
+    if (visibilityButton) {
+      const allHidden = available > 0 && hidden === available;
+      const allShown = available > 0 && hidden === 0;
+      visibilityButton.disabled = available === 0;
+      visibilityButton.textContent = allShown ? '◉' : allHidden ? '⊘' : '◐';
+      const action = allShown ? 'Hide' : 'Show';
+      visibilityButton.setAttribute('aria-label',
+        action + ' component and sub-components of '
+        + row.dataset.componentName);
+      visibilityButton.title = visibilityButton.getAttribute('aria-label');
+    }
+    descendantVisibility.set(occurrenceId, {
+      available: available,
+      hidden: hidden,
+    });
+  }
 }
 
 toggleAll.addEventListener('click', () => {
@@ -208,6 +358,21 @@ toggleAll.addEventListener('click', () => {
   applyComponentVisibility(current);
   updateToggleAllButton();
 });
+
+function descendantOccurrences(occurrenceId, result = []) {
+  const pending = [
+    ...(activeConversion.childOccurrences.get(occurrenceId) || []),
+  ].reverse();
+  while (pending.length) {
+    const childId = pending.pop();
+    result.push(childId);
+    const children = activeConversion.childOccurrences.get(childId) || [];
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      pending.push(children[index]);
+    }
+  }
+  return result;
+}
 
 function componentIsVisible(key) {
   const occurrences = activeConversion.occurrencesByComponent.get(key);
@@ -392,12 +557,18 @@ function convert(files) {
   const file = files[0];
   const started = performance.now();
   let phaseStarted = started;
-  activeConversion = { started: started, phaseStarted: phaseStarted };
+  activeConversion = {
+    started: started,
+    phaseStarted: phaseStarted,
+    fileName: file.name,
+  };
   activeConversion.loadedArtifacts = new Set();
   activeConversion.hasRenderedArtifact = false;
   activeConversion.hiddenOccurrences = new Set();
+  activeConversion.collapsedOccurrences = new Set();
   activeConversion.componentKeys = new Set();
   activeConversion.occurrencesByComponent = new Map();
+  activeConversion.childOccurrences = new Map();
   const conversionState = activeConversion;
   startTitleAnimation(file.name, conversionState);
   referenceRootName = file.name;
@@ -509,10 +680,14 @@ function convert(files) {
                         }).join(''));
         },
         undefined,
-        (err) => { finish('Conversion finished but three.js could not render: ' + err); }
+        (err) => {
+          reportFrontendError('Three.js could not render converted GLB', err);
+          finish('Conversion finished but three.js could not render: ' + err);
+        }
       );
     })
     .catch((err) => {
+      reportFrontendError('Conversion workflow failed', err);
       finishTitle(file.name, conversionState);
       finish(String(err.message || err));
     });
@@ -614,11 +789,15 @@ function renderComponentTree() {
   let count = 0;
   activeConversion.componentKeys = new Set();
   activeConversion.occurrencesByComponent = new Map();
+  activeConversion.childOccurrences = new Map();
   const add = (name, parent, depth, ancestors, occurrenceId) => {
     const row = document.createElement('div');
     count += 1;
     row.classList.add('component');
     const key = componentKey(name);
+    const children = referenceChildren.get(key) || [];
+    const hasChildren = children.length > 0 && !ancestors.has(key);
+    activeConversion.childOccurrences.set(occurrenceId, []);
     activeConversion.componentKeys.add(key);
     let occurrences = activeConversion.occurrencesByComponent.get(key);
     if (!occurrences) {
@@ -626,11 +805,27 @@ function renderComponentTree() {
       activeConversion.occurrencesByComponent.set(key, occurrences);
     }
     occurrences.push(occurrenceId);
+    row.dataset.componentName = name;
     const notFound = depth && knownMissingComponents.has(key);
     if (notFound) activeConversion.hiddenOccurrences.add(occurrenceId);
     row.dataset.partName = key;
     row.dataset.occurrenceId = occurrenceId;
     row.dataset.notFound = notFound ? 'true' : 'false';
+    if (hasChildren) {
+      const collapseButton = document.createElement('button');
+      collapseButton.type = 'button';
+      collapseButton.className = 'component-control component-collapse';
+      collapseButton.textContent = activeConversion.collapsedOccurrences
+        .has(occurrenceId) ? '▸' : '▾';
+      collapseButton.setAttribute('aria-expanded',
+        String(!activeConversion.collapsedOccurrences.has(occurrenceId)));
+      row.appendChild(collapseButton);
+      const visibilityButton = document.createElement('button');
+      visibilityButton.type = 'button';
+      visibilityButton.className =
+        'component-control component-descendant-visibility';
+      row.appendChild(visibilityButton);
+    }
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.className = 'component-visibility';
@@ -646,10 +841,10 @@ function renderComponentTree() {
     row.appendChild(label);
     if (notFound) row.classList.add('missing');
     parent.appendChild(row);
-    const children = referenceChildren.get(key) || [];
-    if (children.length && !ancestors.has(key)) {
+    if (hasChildren) {
       const childList = document.createElement('div');
       childList.className = 'component-children';
+      childList.hidden = activeConversion.collapsedOccurrences.has(occurrenceId);
       row.after(childList);
       const nestedAncestors = new Set(ancestors);
       nestedAncestors.add(key);
@@ -658,8 +853,11 @@ function renderComponentTree() {
         const childKey = componentKey(child);
         const index = siblingCounts.get(childKey) || 0;
         siblingCounts.set(childKey, index + 1);
+        const childOccurrenceId = instanceOccurrenceKey(name, child, index);
+        activeConversion.childOccurrences.get(occurrenceId)
+          .push(childOccurrenceId);
         add(child, childList, depth + 1, nestedAncestors,
-          instanceOccurrenceKey(name, child, index));
+          childOccurrenceId);
       }
     }
   };
