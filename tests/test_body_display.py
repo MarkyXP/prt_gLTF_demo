@@ -11,6 +11,7 @@ from application.resolver.display import (
 )
 import body_display
 from converter.model_history import LinkedBodyRecord, linked_body_records_from_payload
+from converter.linked_body_visibility import hidden_linked_body_keys
 
 
 def atom(value):
@@ -47,6 +48,23 @@ def piece(piece_id, bounds):
         "stream": "JT",
         "jtPiece": piece_id,
         "t": {"pts": [bounds[:3], bounds[3:]], "tris": []},
+    }
+
+
+def shape_piece(piece_id, bounds):
+    """Build a compact synthetic linked-body mesh entry."""
+    low, high = bounds[:3], bounds[3:]
+    points = [
+        (low[0], low[1], low[2]),
+        (high[0], low[1], low[2]),
+        (low[0], high[1], low[2]),
+        (low[0], low[1], high[2]),
+    ]
+    return {
+        "stream": "JT",
+        "jtPiece": piece_id,
+        "t": {"pts": points, "tris": [(0, 1, 2)] * 5000},
+        "lsgPropertyKeys": ("JT_LLPROP_SHAPEIMPL",),
     }
 
 
@@ -244,8 +262,44 @@ class DisplayFilterTests(unittest.TestCase):
         self.assertEqual(dropped, 0)
         self.assertEqual(kept, collection)
 
+    def test_hidden_linked_body_join_requires_a_unique_counterpart(self):
+        bounds = (0, 0, 0, 1, 1, 1)
+        collection = [
+            shape_piece(0, bounds),
+            shape_piece(1, bounds),
+        ]
+        history = [
+            LinkedBodyRecord(index=0, offset=0, source="housing.prt",
+                             body_label="Body(1)"),
+            LinkedBodyRecord(index=1, offset=1, source="housing.prt",
+                             body_label="Body(2)"),
+        ]
+        hidden = hidden_linked_body_keys(
+            collection, [bounds], history)
+        self.assertEqual(hidden, set())
+
+    def test_hidden_linked_body_join_selects_unmatched_rigid_counterpart(self):
+        visible = shape_piece(0, (0, 0, 0, 1, 1, 1))
+        hidden = shape_piece(1, (-2, 0, 0, -1, 1, 1))
+        history = [
+            LinkedBodyRecord(index=0, offset=0, source="housing.prt",
+                             body_label="Body(1)"),
+            LinkedBodyRecord(index=1, offset=1, source="housing.prt",
+                             body_label="Body(2)"),
+        ]
+        keys = hidden_linked_body_keys(
+            [visible, hidden], [(0, 0, 0, 1, 1, 1)], history)
+        self.assertEqual(keys, {("JT", 1)})
+
 
 class ModelHistoryTests(unittest.TestCase):
+    def test_reads_current_nx_linked_body_record_length(self):
+        payload = (
+            b"\x03\x0dLINKED_BODY\x00\x00\x16\x00\x00\x01\x00\x01"
+            b"J:\\parts\\example.prt\x00"
+        )
+        self.assertEqual(len(linked_body_records_from_payload(payload)), 1)
+
     def test_records_expose_source_and_unknown_state(self):
         payload = (
             b"\x03\x0dLINKED_BODY\x00\x1b\x00\x00\x01\x00\x01"

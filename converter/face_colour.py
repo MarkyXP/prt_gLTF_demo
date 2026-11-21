@@ -34,6 +34,7 @@ from converter.face_matching import (
     face_group_mapping,
     tag_signature as _tag_signature,
 )
+from converter.face_identity import join_face_triangles, load_sidecar
 from converter.face_pieces import (
     bounds_distance as _bounds_distance,
     display_lod as _display_lod,
@@ -236,6 +237,7 @@ def decorate_colour_mesh(part_path):
         body_records = {}
 
     table = default_palette()
+    sidecar = load_sidecar(part_path)
 
     def is_coloured(palette):
         if palette is None:
@@ -249,13 +251,20 @@ def decorate_colour_mesh(part_path):
         return None
 
     streams = prt_jt.open_prt(part_path)
-    if "/Root/FastLoad/JT" not in streams:
+    jt_stream = next((
+        stream for name, stream in prt_jt.iter_jt_streams(streams)
+        if not name.endswith("DisplayJT")
+    ), None)
+    if jt_stream is None:
         return None
-    infos = piece_infos(_piece_lods(streams["/Root/FastLoad/JT"].data))
+    infos = piece_infos(_piece_lods(jt_stream.data))
     if not infos:
         return None
 
     assignments = assign_piece_tags(infos, blocks, body_records)
+    single_body_palette = None
+    if len(body_records) == 1:
+        single_body_palette = next(iter(body_records.values())).get("palette")
     collection = []
     for info in infos:
         piece = info["piece"]
@@ -264,9 +273,40 @@ def decorate_colour_mesh(part_path):
         keep = info["keep"]
         tag = assignments.get(piece)
         rows = blocks.get(tag) if tag is not None else None
+        if sidecar is not None and tag is not None and rows is not None:
+            identity = join_face_triangles(mesh, sidecar)
+            row_faces = {face_id for face_id, _palette in rows}
+            if identity is not None and set(identity) == row_faces:
+                palettes_by_face = dict(
+                    (face_id, palette)
+                    for face_id, palette in (rows or []))
+                by_colour = {}
+                for face_id, selected in identity.items():
+                    palette = palettes_by_face.get(face_id)
+                    if palette is None:
+                        palette = body_records.get(tag, {}).get("palette")
+                    rgb = table.get(palette, _WHITE) \
+                        if palette is not None else _WHITE
+                    by_colour.setdefault(tuple(rgb), []).extend(selected)
+                for rgb, selected in by_colour.items():
+                    lane_for = {
+                        tri: position for position, tri in enumerate(keep)}
+                    selected = [tri for tri in selected if tri in lane_for]
+                    if not selected:
+                        continue
+                    collection.append(_mesh_record(
+                        mesh, triangles, selected,
+                        [lane_for[tri] for tri in selected],
+                        stream=jt_stream.name, jtPiece=piece,
+                        color=list(rgb), doubleSided=True,
+                        colourSource="nx-face-identity"))
+                if by_colour:
+                    continue
         body_palette = (
             body_records.get(tag, {}).get("palette")
             if tag is not None else None)
+        if body_palette is None and single_body_palette is not None:
+            body_palette = single_body_palette
         if rows is not None and len(rows) == len(info["groups"]):
             palettes = _effective_palettes(rows, body_palette)
         elif body_palette is not None:
@@ -277,7 +317,7 @@ def decorate_colour_mesh(part_path):
         if not palettes:
             collection.append(_mesh_record(
                 mesh, triangles, keep, range(len(keep)),
-                stream="/Root/FastLoad/JT", jtPiece=piece, color=None,
+                stream=jt_stream.name, jtPiece=piece, color=None,
                 doubleSided=True))
             continue
         by_colour = {}
@@ -289,7 +329,7 @@ def decorate_colour_mesh(part_path):
             collection.append(_mesh_record(
                 mesh, triangles, selected,
                 [lane_for[tri] for tri in selected],
-                stream="/Root/FastLoad/JT", jtPiece=piece,
+                stream=jt_stream.name, jtPiece=piece,
                 color=list(rgb), doubleSided=True, colourSource="nx"))
     return collection or None
 

@@ -240,13 +240,30 @@ def drop_undisplayed_bodies(path: str,
     records = [(index, None, bounds)
                for index, (bounds, _hidden) in enumerate(states)]
     exact = _match_body_bounds(collection, records) or {}
+    try:
+        from converter.model_history import linked_body_records
+        history = linked_body_records(path)
+    except Exception:
+        LOGGER.exception("Failed to read model history for %s", path)
+        history = []
     history_keys = _linked_history_keys(path, collection, states, exact)
-    if not hidden_indexes and not history_keys:
-        return collection, 0
     hidden_keys = {
         key for key, index in exact.items() if index in hidden_indexes
     }
     hidden_keys |= history_keys
+    if not hidden_indexes:
+        try:
+            from converter.linked_body_visibility import (
+                hidden_linked_body_keys,
+            )
+            hidden_keys |= hidden_linked_body_keys(
+                collection,
+                [bounds for bounds, _hidden in states],
+                history,
+            )
+        except Exception:
+            LOGGER.exception(
+                "Failed to read linked-body visibility for %s", path)
     unmatched_records = sorted(hidden_indexes - set(exact.values()))
     if unmatched_records:
         hidden_keys |= _match_envelope_bodies(

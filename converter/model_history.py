@@ -26,6 +26,7 @@ import color_index
 LINKED_BODY_RECORD = (
     b"\x03\x0dLINKED_BODY\x00\x1b\x00\x00\x01\x00\x01"
 )
+LINKED_BODY_PREFIX = b"\x03\x0dLINKED_BODY\x00"
 VISIBILITY_STATES = Literal["visible", "hidden", "unknown"]
 
 
@@ -56,21 +57,33 @@ def linked_body_count_from_payload(payload: bytes | None) -> int:
     """
     if not payload:
         return 0
-    return payload.count(LINKED_BODY_RECORD)
+    return len(_record_starts(payload))
+
+
+def _record_starts(payload: bytes) -> list[int]:
+    """Return bounded linked-body record offsets across known NX lengths."""
+    starts = []
+    position = 0
+    while True:
+        position = payload.find(LINKED_BODY_PREFIX, position)
+        if position < 0:
+            break
+        suffix = payload[position + len(LINKED_BODY_PREFIX):]
+        if (len(suffix) >= 6 and
+                ((suffix[0] >= 0x10 and suffix[1:6] ==
+                  b"\x00\x00\x01\x00\x01")
+                 or (len(suffix) >= 7 and suffix[0] == 0
+                     and suffix[2:7] == b"\x00\x00\x01\x00\x01"))):
+            starts.append(position)
+        position += len(LINKED_BODY_PREFIX)
+    return starts
 
 
 def linked_body_sources_from_payload(payload: bytes | None) -> list[str]:
     """Return the first referenced .prt source from each linked-body record."""
     if not payload:
         return []
-    starts = []
-    position = 0
-    while True:
-        position = payload.find(LINKED_BODY_RECORD, position)
-        if position < 0:
-            break
-        starts.append(position)
-        position += len(LINKED_BODY_RECORD)
+    starts = _record_starts(payload)
     sources = []
     for index, start in enumerate(starts):
         end = starts[index + 1] if index + 1 < len(starts) else len(payload)
@@ -108,14 +121,7 @@ def linked_body_records_from_payload(
     """
     if not payload:
         return []
-    starts = []
-    position = 0
-    while True:
-        position = payload.find(LINKED_BODY_RECORD, position)
-        if position < 0:
-            break
-        starts.append(position)
-        position += len(LINKED_BODY_RECORD)
+    starts = _record_starts(payload)
     records = []
     for index, start in enumerate(starts):
         end = starts[index + 1] if index + 1 < len(starts) else len(payload)

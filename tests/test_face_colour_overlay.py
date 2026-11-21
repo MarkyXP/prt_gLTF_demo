@@ -1,11 +1,12 @@
 """Regression tests for coverage-preserving NX colour overlays."""
 
 import unittest
+from unittest.mock import patch
 
 from application import config  # noqa: F401
 from application.geometry import overlay_colour_meshes
 from converter.face_matching import assign_piece_tags, effective_palettes
-from converter.face_colour import _corner_lane, _mesh_record
+from converter.face_colour import _corner_lane, _mesh_record, decorate_colour_mesh
 
 
 def entry(piece, color=None):
@@ -113,3 +114,36 @@ class DecoratedLaneTests(unittest.TestCase):
         self.assertIsNone(_corner_lane(mesh, [0], "cornerColors"))
         record = _mesh_record(mesh, [(0, 1, 2)], [0])
         self.assertNotIn("cornerColors", record["t"])
+
+
+class SingleBodyFallbackTests(unittest.TestCase):
+    def test_single_nx_body_palette_paints_when_face_join_is_unresolved(self):
+        mesh = {
+            "pts": [(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+            "tris": [(0, 1, 2)],
+            "fm": type("Faces", (), {"vtxGrp": lambda self, _tri: 0})(),
+        }
+        info = {
+            "piece": 0, "mesh": mesh, "triangles": mesh["tris"],
+            "keep": [0], "groups": {0}, "bounds": (0, 0, 0, 1, 1, 0),
+        }
+        with patch("converter.face_colour._ug_part_payload",
+                   return_value=b"payload"), \
+             patch("converter.face_colour._face_rows",
+                   return_value=[(9, 10, 173), (9, 11, 40)]), \
+             patch("converter.face_colour.body_colour_by_tag",
+                   return_value={9: {"palette": 40}}), \
+             patch("converter.face_colour.default_palette",
+                   return_value={40: (1.0, 0.0, 0.0), 173: (0.0, 0.0, 0.0)}), \
+             patch("converter.face_colour.prt_jt.open_prt",
+                   return_value={"UG_PART/JT": type("Stream", (), {
+                       "data": b"jt", "name": "UG_PART/JT"})()}), \
+             patch("converter.face_colour._piece_lods",
+                   return_value={}), \
+             patch("converter.face_colour.piece_infos",
+                   return_value=[info]), \
+             patch("converter.face_colour.load_sidecar",
+                   return_value=None):
+            result = decorate_colour_mesh("part.prt")
+        self.assertEqual(result[0]["color"], [1.0, 0.0, 0.0])
+        self.assertEqual(result[0]["colourSource"], "nx")
