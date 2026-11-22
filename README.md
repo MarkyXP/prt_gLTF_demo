@@ -14,7 +14,7 @@ fallback described below.
 
 ```
 py -m pip install -r requirements.txt
-py app.py                                    # web server on http://127.0.0.1:8000
+py app.py                                    # web server on port 8000 (bound to 0.0.0.0, reachable on all interfaces)
 py app.py my_part.prt                        # CLI: convert in place -> my_part.gltf (+ .bin)
 py app.py my_part.prt out\my_part.gltf       # CLI: convert to an explicit destination
 ```
