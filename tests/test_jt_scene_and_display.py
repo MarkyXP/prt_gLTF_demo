@@ -204,7 +204,8 @@ class ColourTests(unittest.TestCase):
                              [(98, (0.0, 0.616, 0.851), bounds)])
         with patch("color_index.find_ug_part", return_value=record), \
              patch("converter.palette.palette_table", return_value={}):
-            self.assertEqual(body_palette_bounds_records("test.prt"), [])
+            self.assertEqual(body_palette_bounds_records("test.prt"),
+                             [(98, None, None)])
 
     def test_overlap_binding_fills_remaining_records_only(self):
         collection = [

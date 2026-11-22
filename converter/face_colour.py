@@ -43,7 +43,7 @@ from converter.face_pieces import (
     piece_lods as _piece_lods,
     primal as _primal,
 )
-from converter.palette import default_palette
+from converter.palette import palette_table
 
 _FACE_SELECTOR = b"\x93\x8c"
 _WHITE = (1.0, 1.0, 1.0)
@@ -208,6 +208,70 @@ def _mesh_record(mesh, triangles, triangle_indices, lane_indices=None,
     return {"t": record, **extra}
 
 
+def _multimesh_colour_entries(jt_data, stream_name, raw_rows, table):
+    """Colour whole meshes when one JT piece packs several same-type shapes.
+
+    Transitional NX saves can store more than one shape at the same LOD type
+    inside a single JT piece.  The per-face rows then cover every mesh at
+    once, so the single ranked group mapping cannot bind them.  When each
+    mesh's vertex-group count matches exactly one palette whose total face
+    count is unique, colour that mesh uniformly.  Every census row must be
+    accounted for; otherwise the caller keeps the normal path.
+
+    > example
+    > _multimesh_colour_entries(jt_bytes, rows, table) -> [{...}] or None
+    """
+    census = {}
+    for _tag, _face_id, palette in raw_rows:
+        if palette is not None:
+            census[palette] = census.get(palette, 0) + 1
+    if not census:
+        return None
+    entries = []
+    used = set()
+    assigned = 0
+    for piece in prt_jt.extract_meshes(jt_data):
+        meshes = piece.get("meshes", [])
+        if len(meshes) < 2:
+            continue
+        pending = []
+        for mesh in meshes:
+            groups = {group for group in (mesh.get("faceGroups") or ())
+                      if group not in (-1, 0xFFFFFFFF)}
+            matches = [palette for palette, count in census.items()
+                       if count == len(groups)]
+            if len(matches) != 1:
+                pending = None
+                break
+            rgb = table.get(matches[0])
+            if rgb is None:
+                pending = None
+                break
+            pending.append((mesh, matches[0], rgb))
+        if not pending:
+            continue
+        for mesh, palette, rgb in pending:
+            record = {
+                "pts": mesh["pts"], "tris": mesh["tris"],
+                "npts": mesh["npts"], "ntris": mesh["ntris"],
+            }
+            for key in ("cornerNormals", "cornerColors"):
+                if key in mesh:
+                    record[key] = mesh[key]
+            entries.append({
+                "t": record, "stream": stream_name,
+                "jtPiece": piece.get("piece", 0),
+                "color": list(rgb), "colourSource": "nx",
+                "doubleSided": True,
+            })
+            used.add(palette)
+            assigned += len({group for group in (mesh.get("faceGroups") or ())
+                             if group not in (-1, 0xFFFFFFFF)})
+    if not entries or used != set(census) or assigned != sum(census.values()):
+        return None
+    return entries
+
+
 def decorate_colour_mesh(part_path):
     """Overlay NX face and body colours on every decoded JT piece.
 
@@ -232,7 +296,7 @@ def decorate_colour_mesh(part_path):
     except Exception:
         body_records = {}
 
-    table = default_palette()
+    table = palette_table(payload)
 
     def is_coloured(palette):
         if palette is None:
@@ -252,6 +316,10 @@ def decorate_colour_mesh(part_path):
     ), None)
     if jt_stream is None:
         return None
+    multimesh = _multimesh_colour_entries(
+        jt_stream.data, jt_stream.name, raw_rows, table)
+    if multimesh:
+        return multimesh
     infos = piece_infos(_piece_lods(jt_stream.data))
     if not infos:
         return None

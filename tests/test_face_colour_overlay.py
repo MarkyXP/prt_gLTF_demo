@@ -31,6 +31,22 @@ class OverlayCoverageTests(unittest.TestCase):
         self.assertEqual([item["jtPiece"] for item in result], [0, 1, 2, 3])
         self.assertEqual(sum(1 for item in result if item.get("color")), 2)
 
+    def test_coarser_decorated_piece_keeps_raw_geometry(self):
+        raw = [{
+            "stream": "JT", "jtPiece": 0,
+            "t": {"pts": [(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)],
+                  "tris": [(0, 1, 2), (2, 1, 3)]},
+        }]
+        decorated = [{
+            "stream": "JT", "jtPiece": 0,
+            "t": {"pts": [(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+                  "tris": [(0, 1, 2)]},
+            "color": [1, 0, 0], "colourSource": "nx",
+        }]
+        result = overlay_colour_meshes(raw, decorated)
+        self.assertEqual(result, raw)
+        self.assertEqual(len(result[0]["t"]["tris"]), 2)
+
     def test_no_decorations_returns_raw_collection(self):
         raw = [entry(0), entry(1)]
         self.assertEqual(overlay_colour_meshes(raw, []), raw)
@@ -133,7 +149,7 @@ class SingleBodyFallbackTests(unittest.TestCase):
                    return_value=[(9, 10, 173), (9, 11, 40)]), \
              patch("converter.face_colour.body_colour_by_tag",
                    return_value={9: {"palette": 40}}), \
-             patch("converter.face_colour.default_palette",
+             patch("converter.face_colour.palette_table",
                    return_value={40: (1.0, 0.0, 0.0), 173: (0.0, 0.0, 0.0)}), \
              patch("converter.face_colour.prt_jt.open_prt",
                    return_value={"UG_PART/JT": type("Stream", (), {

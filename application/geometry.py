@@ -86,14 +86,27 @@ def _inherit_metadata(entry: dict, raw_entries: list[dict]) -> dict:
     return entry
 
 
+def _triangle_count(entries: list[dict]) -> int:
+    """Total decoded triangles across a group of collection entries.
+
+    > example
+    > _triangle_count([{"t": {"tris": [(0, 1, 2)]}}]) -> 1
+    """
+    return sum(len(entry.get("t", {}).get("tris", [])) for entry in entries)
+
+
 def overlay_colour_meshes(raw_collection: list[dict],
                           coloured_collection: list[dict]) -> list[dict]:
     """Overlay colour entries without dropping raw geometry unnecessarily.
 
     Raw geometry is authoritative: an uncoloured raw piece keeps its own mesh
     and normals.  A decorated piece replaces its raw counterpart only when it
-    actually carries a colour.  If a colour-bearing sheet was pruned from the
-    raw set, raw pieces overlapping that sheet are treated as an alternative
+    actually carries a colour *and* is not a coarser representation.  Legacy
+    parts can pack several same-type LOD shapes into one piece, so a decorated
+    display sheet may hold fewer triangles than the decoded raw piece; keeping
+    raw geometry there avoids losing detail (the body-colour pass can still
+    paint it by bounds).  If a colour-bearing sheet was pruned from the raw
+    set, raw pieces overlapping that sheet are treated as an alternative
     representation and superseded; unrelated raw pieces are kept.
 
     > example
@@ -129,7 +142,9 @@ def overlay_colour_meshes(raw_collection: list[dict],
     suppressed = 0
     for key in raw_order:
         decorated = decorated_by_key.pop(key, None)
-        if decorated and _is_decorated(decorated):
+        if (decorated and _is_decorated(decorated)
+                and _triangle_count(decorated)
+                >= _triangle_count(raw_by_key[key])):
             result.extend(_inherit_metadata(entry, raw_by_key[key])
                           for entry in decorated)
             continue

@@ -18,10 +18,10 @@ modules through the flat imports `app.py` sets up (`converter/` is on
 | `parasolid.py`    | Parasolid transmit (`x_b`) handling on top of `s19_route_a` |
 | `row_state.py`    | per-occurrence placement + blank state rows from the UG_PART display-status records |
 | `suppress_state.py` | per-component suppress-state records (structure-row reader + loader-side flag reader) |
-| `color_index.py`  | part-colour record reader (NX palette index) + translucent-percent sites |
+| `color_index.py`  | part-colour record reader (NX palette index) + translucent-percent sites; legacy OLE body rows and `f0 06 01 07` mixed-width bounds |
 | `body_display.py` | per-body display-state atom reader (blanked/non-displayed bodies) |
 | `rmfastload/`     | RMFastLoad object-id membership parser, complete-set selector, and diagnostics (see its README) |
-| `palette.py`      | palette row-RGB decoder merged over the factory default table |
+| `palette.py`      | palette row-RGB decoder merged over the factory default table (current sparse rows and the legacy inline `<80 a5> [rgb] 03 <len> <name> 00 <slot>` table) |
 | `face_colour.py`  | per-face display-colour rows decoded from `UG_PART` (header model + face-id rank) |
 | `feature_state.py` | conservative NX2412 EXTRUDE state atoms; no feature-name or JT identity join |
 | `nx_default_palette.json` | 216-entry factory colour table fallback |
