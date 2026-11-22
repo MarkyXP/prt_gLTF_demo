@@ -47,6 +47,28 @@ class OverlayCoverageTests(unittest.TestCase):
         self.assertEqual(result, raw)
         self.assertEqual(len(result[0]["t"]["tris"]), 2)
 
+    def test_per_mesh_gate_keeps_raw_body_and_coloured_details(self):
+        def mesh_entry(index, tri_count, color=None):
+            return {
+                "stream": "JT", "jtPiece": 0, "meshIndex": index,
+                "t": {"pts": [(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+                      "tris": [(0, 1, 2)] * tri_count},
+                "color": color,
+            }
+
+        raw = [mesh_entry(0, 2), mesh_entry(1, 1), mesh_entry(2, 1)]
+        decorated = [
+            mesh_entry(0, 1, [0.4, 0.4, 0.4]),
+            mesh_entry(1, 1, [0.6, 0.0, 0.0]),
+            mesh_entry(2, 1, [0.0, 1.0, 0.0]),
+        ]
+        result = overlay_colour_meshes(raw, decorated)
+        by_mesh = {entry["meshIndex"]: entry for entry in result}
+        self.assertEqual(len(by_mesh[0]["t"]["tris"]), 2)
+        self.assertIsNone(by_mesh[0].get("color"))
+        self.assertEqual(by_mesh[1]["color"], [0.6, 0.0, 0.0])
+        self.assertEqual(by_mesh[2]["color"], [0.0, 1.0, 0.0])
+
     def test_no_decorations_returns_raw_collection(self):
         raw = [entry(0), entry(1)]
         self.assertEqual(overlay_colour_meshes(raw, []), raw)

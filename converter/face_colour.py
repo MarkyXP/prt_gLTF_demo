@@ -235,7 +235,7 @@ def _multimesh_colour_entries(jt_data, stream_name, raw_rows, table):
         if len(meshes) < 2:
             continue
         pending = []
-        for mesh in meshes:
+        for index, mesh in enumerate(meshes):
             groups = {group for group in (mesh.get("faceGroups") or ())
                       if group not in (-1, 0xFFFFFFFF)}
             matches = [palette for palette, count in census.items()
@@ -247,10 +247,10 @@ def _multimesh_colour_entries(jt_data, stream_name, raw_rows, table):
             if rgb is None:
                 pending = None
                 break
-            pending.append((mesh, matches[0], rgb))
+            pending.append((index, mesh, matches[0], rgb))
         if not pending:
             continue
-        for mesh, palette, rgb in pending:
+        for index, mesh, palette, rgb in pending:
             record = {
                 "pts": mesh["pts"], "tris": mesh["tris"],
                 "npts": mesh["npts"], "ntris": mesh["ntris"],
@@ -260,7 +260,7 @@ def _multimesh_colour_entries(jt_data, stream_name, raw_rows, table):
                     record[key] = mesh[key]
             entries.append({
                 "t": record, "stream": stream_name,
-                "jtPiece": piece.get("piece", 0),
+                "jtPiece": piece.get("piece", 0), "meshIndex": index,
                 "color": list(rgb), "colourSource": "nx",
                 "doubleSided": True,
             })
@@ -270,6 +270,95 @@ def _multimesh_colour_entries(jt_data, stream_name, raw_rows, table):
     if not entries or used != set(census) or assigned != sum(census.values()):
         return None
     return entries
+
+
+def _mesh_groups(mesh):
+    """Non-sentinel vertex-group ids present on one decoded mesh."""
+    return {group for group in (mesh.get("faceGroups") or ())
+            if group not in (-1, 0xFFFFFFFF)}
+
+
+def _mesh_record_from_mesh(mesh):
+    """Build a plain triangle record from one decoded mesh."""
+    record = {
+        "pts": mesh["pts"], "tris": mesh["tris"],
+        "npts": mesh["npts"], "ntris": mesh["ntris"],
+    }
+    for key in ("cornerNormals", "cornerColors"):
+        if key in mesh:
+            record[key] = mesh[key]
+    return record
+
+
+def _primal_mesh_index(meshes, primal):
+    """Index of ``primal`` within a piece's mesh list, defaulting to 0."""
+    target = (len(primal.get("pts") or ()), len(primal.get("tris") or ()))
+    for index, mesh in meshes:
+        if (len(mesh.get("pts") or ()),
+                len(mesh.get("tris") or ())) == target:
+            return index
+    return 0
+
+
+def _extra_mesh_colour_entries(rows, primal_index, meshes,
+                               primal_groups, table, stream_name, piece):
+    """Colour non-primal meshes from the face rows that cover them.
+
+    A JT piece can hold the body plus small separately-coloured details (for
+    example a red indicator and green pads).  Their face rows appear after
+    the body's own rows, so the body block no longer has an exact group-count
+    match.  When every extra mesh's group count matches one palette's row
+    count and the remaining rows fit the primal mesh, treat the extras as
+    uniformly coloured and leave the body to the normal body-colour path.
+
+    > example
+    > _extra_mesh_colour_entries(...) -> (entries, remaining_rows) or None
+    """
+    census = {}
+    for _face, palette in rows:
+        if palette is None:
+            continue
+        rgb = table.get(palette)
+        if rgb is None or tuple(rgb) == _WHITE:
+            continue
+        census[palette] = census.get(palette, 0) + 1
+    if not census:
+        return None
+
+    matched = {}
+    used = set()
+    for index, mesh in meshes:
+        if index == primal_index:
+            continue
+        groups = _mesh_groups(mesh)
+        if not groups:
+            continue
+        candidates = [palette for palette, count in census.items()
+                      if count == len(groups)]
+        if len(candidates) != 1 or candidates[0] in used:
+            return None
+        matched[index] = (mesh, candidates[0])
+        used.add(candidates[0])
+    if not matched:
+        return None
+
+    remaining = [(face, palette) for face, palette in rows
+                 if palette not in used]
+    if len(remaining) != primal_groups:
+        return None
+
+    entries = []
+    for index, (mesh, palette) in matched.items():
+        rgb = table.get(palette)
+        if rgb is None:
+            return None
+        entries.append({
+            "t": _mesh_record_from_mesh(mesh), "stream": stream_name,
+            "jtPiece": piece, "meshIndex": index,
+            "color": list(rgb), "colourSource": "nx",
+            "doubleSided": True,
+        })
+    return entries, remaining
 
 
 def decorate_colour_mesh(part_path):
@@ -323,6 +412,12 @@ def decorate_colour_mesh(part_path):
     infos = piece_infos(_piece_lods(jt_stream.data))
     if not infos:
         return None
+    piece_meshes = {}
+    for piece_data in prt_jt.extract_meshes(jt_stream.data):
+        piece_id = piece_data.get("piece", 0)
+        if piece_id not in piece_meshes:
+            piece_meshes[piece_id] = list(
+                enumerate(piece_data.get("meshes", [])))
 
     assignments = assign_piece_tags(infos, blocks, body_records)
     single_body_palette = None
@@ -341,6 +436,17 @@ def decorate_colour_mesh(part_path):
             if tag is not None else None)
         if body_palette is None and single_body_palette is not None:
             body_palette = single_body_palette
+        meshes = piece_meshes.get(piece, [])
+        primal_index = 0
+        extra_entries = []
+        if len(meshes) > 1:
+            primal_index = _primal_mesh_index(meshes, mesh)
+            if rows is not None and len(rows) > len(info["groups"]):
+                extra = _extra_mesh_colour_entries(
+                    rows, primal_index, meshes, len(info["groups"]),
+                    table, jt_stream.name, piece)
+                if extra is not None:
+                    extra_entries, rows = extra
         if rows is not None and len(rows) == len(info["groups"]):
             palettes = _effective_palettes(rows, body_palette)
         elif body_palette is not None:
@@ -351,8 +457,9 @@ def decorate_colour_mesh(part_path):
         if not palettes:
             collection.append(_mesh_record(
                 mesh, triangles, keep, range(len(keep)),
-                stream=jt_stream.name, jtPiece=piece, color=None,
-                doubleSided=True))
+                stream=jt_stream.name, jtPiece=piece,
+                meshIndex=primal_index, color=None, doubleSided=True))
+            collection.extend(extra_entries)
             continue
         by_colour = {}
         for tri in keep:
@@ -364,7 +471,9 @@ def decorate_colour_mesh(part_path):
                 mesh, triangles, selected,
                 [lane_for[tri] for tri in selected],
                 stream=jt_stream.name, jtPiece=piece,
+                meshIndex=primal_index,
                 color=list(rgb), doubleSided=True, colourSource="nx"))
+        collection.extend(extra_entries)
     return collection or None
 
 

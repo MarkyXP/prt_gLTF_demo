@@ -121,6 +121,16 @@ class Oem320PaletteTests(unittest.TestCase):
         for tag in (0x77, 0x78):
             self.assertEqual(records[tag]["rgb"], (0.0, 0.0, 1.0))
 
+    def test_pump_detail_meshes_keep_red_and_green_face_colours(self):
+        entries = decorate_colour_mesh(str(ASSET))
+        by_mesh = {
+            (entry.get("jtPiece"), entry.get("meshIndex")):
+                tuple(round(value, 3) for value in entry["color"])
+            for entry in entries
+        }
+        self.assertEqual(by_mesh[(4, 1)], (0.6, 0.0, 0.0))
+        self.assertEqual(by_mesh[(4, 2)], (0.0, 1.0, 0.0))
+
     def test_pump_body_bounds_use_mixed_width_atoms(self):
         records = body_colour_by_tag(str(ASSET))
         bounds = records[0x0E]["bounds"]

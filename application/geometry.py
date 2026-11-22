@@ -21,12 +21,17 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _piece_key(entry: dict) -> tuple:
-    """Return the stream/piece identity of one collection entry.
+    """Return the stream/piece/mesh identity of one collection entry.
+
+    A JT piece may hold several meshes (a body plus small coloured details),
+    so the mesh index keeps those details independently overlayable while
+    defaulting to zero for callers that only track the piece.
 
     > example
-    > _piece_key({"stream": "jt", "jtPiece": 2}) -> ("jt", 2)
+    > _piece_key({"stream": "jt", "jtPiece": 2}) -> ("jt", 2, 0)
     """
-    return (entry.get("stream"), entry.get("jtPiece"))
+    return (entry.get("stream"), entry.get("jtPiece"),
+            entry.get("meshIndex", 0))
 
 
 def _is_decorated(entries: list[dict]) -> bool:
@@ -188,10 +193,11 @@ def mesh_collection(data: bytes, part_path=None) -> list[dict]:
     """
     collection = []
     for mesh in prt_jt.extract_meshes(data):
-        for triangle_mesh in mesh["meshes"]:
+        for index, triangle_mesh in enumerate(mesh["meshes"]):
             collection.append({
                 "stream": mesh["stream"],
                 "jtPiece": mesh["piece"],
+                "meshIndex": index,
                 "t": triangle_mesh,
                 "color": triangle_mesh.get("color"),
                 "material": triangle_mesh.get("material"),
