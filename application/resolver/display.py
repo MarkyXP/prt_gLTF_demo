@@ -214,6 +214,31 @@ def _linked_history_keys(path, collection, states, matches):
     return keys
 
 
+def drop_suppressed_feature_bodies(
+    path: str, collection: list[dict]
+) -> tuple[list[dict], int]:
+    """Drop JT pieces with verified identity to a suppressed NX feature.
+
+    The source-hash-bound manifest joins a state record and a JT piece only
+    after controlled NX toggles and a complete triangle-identity match.
+    Missing, stale, malformed, or ambiguous evidence keeps the geometry.
+    """
+    try:
+        from converter.feature_identity import suppressed_feature_piece_keys
+        hidden_keys = suppressed_feature_piece_keys(path)
+    except Exception:
+        LOGGER.exception(
+            "Failed to read NX feature-to-JT identity for %s", path)
+        return collection, 0
+    if not hidden_keys:
+        return collection, 0
+    kept = [
+        entry for entry in collection
+        if (entry.get("stream"), entry.get("jtPiece")) not in hidden_keys
+    ]
+    return kept, len(collection) - len(kept)
+
+
 def drop_undisplayed_bodies(path: str,
                             collection: list[dict]) -> tuple[list[dict], int]:
     """Remove JT pieces positively bound to non-displayed NX bodies.
@@ -396,11 +421,24 @@ def _is_neutral_jt_colour(value) -> bool:
     return all(abs(float(component) - 0.8) <= 1.0e-6 for component in rgb)
 
 
-def paint_body_display(path: str, collection: list[dict]) -> tuple[list[dict], int]:
+def _is_nx_colour(entry):
+    """Keep NX-derived face colours authoritative over body palettes."""
+    source = entry.get("colourSource")
+    return source == "nx" or (
+        isinstance(source, str) and source.startswith("nx-"))
+
+
+def paint_body_display(
+    path: str,
+    collection: list[dict],
+    palette_order: list[dict] | tuple[dict, ...] | None = None,
+) -> tuple[list[dict], int]:
     """Paint, then drop mesh entries that could never render visibly.
 
     Fully transparent entries (translucency 100) are removed entirely and
     counted; partially transparent entries keep the alpha floor painting.
+    ``palette_order`` preserves the original JT ordering when earlier
+    visibility filters have removed entries.
 
     > example
     > paint_body_display("part.prt", collection)
@@ -421,7 +459,7 @@ def paint_body_display(path: str, collection: list[dict]) -> tuple[list[dict], i
             for index, rgb, bounds in body_palette_bounds_records(str(path))
         ]
         face_only = bool(collection) and all(
-            entry.get("colourSource") == "nx" for entry in collection)
+            _is_nx_colour(entry) for entry in collection)
         matches = None
         if not face_only:
             matches = (
@@ -448,16 +486,27 @@ def paint_body_display(path: str, collection: list[dict]) -> tuple[list[dict], i
             per_entry = None
         else:
             per_entry = []
-        for position, entry in enumerate(collection):
-            if entry.get("colourSource") == "nx":
+        palette_positions = {
+            id(entry): position
+            for position, entry in enumerate(
+                collection if palette_order is None else palette_order)
+        }
+        for current_position, entry in enumerate(collection):
+            if _is_nx_colour(entry):
                 continue
+            position = (
+                palette_positions.get(id(entry))
+                if palette_order is not None
+                else current_position
+            )
             if matches is not None:
                 index = matches.get((entry["stream"], entry["jtPiece"]))
                 rgb = records[index][1] if index is not None else None
             else:
                 rgb = (
                     per_entry[position][1]
-                    if per_entry and position < len(per_entry)
+                    if per_entry and position is not None
+                    and position < len(per_entry)
                     else records[0][1] if per_entry is None else None
                 )
             if rgb and _is_neutral_jt_colour(entry.get("color")):

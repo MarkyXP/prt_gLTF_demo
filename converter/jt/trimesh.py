@@ -233,6 +233,7 @@ def decode_trimesh(obj_bytes, diagnostic_label=""):
     tris, slots = _md2.primal_from_dual(md.fm)
     pairs = [(t, s) for t in range(len(tris)) if tris[t] is not None
              for s in [slots[t]]]
+    face_groups = [md.fm.vtxGrp(t) for t, _slot in pairs]
     tris = [tris[t] for t in range(len(tris)) if tris[t] is not None]
     slots = [s for _t, s in pairs]
     pts = r.get('coords')
@@ -303,6 +304,7 @@ def decode_trimesh(obj_bytes, diagnostic_label=""):
                 stage="oriented",
             )
     return {'pts': pts, 'tris': tris, 'fm': md.fm, 'slots': slots,
+            'faceGroups': face_groups,
             'cornerNormals': corner_n, 'normals': norms,
             'colors': colors, 'cornerColors': corner_c,
             'colorHash': r.get('colorHash'),
@@ -347,6 +349,7 @@ def _decode_piece(name, pi, base, jt):
                 t = decode_trimesh(el['objdata'], diagnostic_label)
                 m['meshes'].append({'pts': t['pts'], 'tris': t['tris'],
                                     'npts': t['npts'], 'ntris': t['ntris'],
+                                    'faceGroups': t.get('faceGroups'),
                                     'cornerNormals': t['cornerNormals'],
                                     'colors': t.get('colors'),
                                     'cornerColors': t.get('cornerColors'),

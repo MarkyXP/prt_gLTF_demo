@@ -117,6 +117,48 @@ class DecoratedLaneTests(unittest.TestCase):
 
 
 class SingleBodyFallbackTests(unittest.TestCase):
+    def test_nx_palette_rgb_overrides_factory_colour_lookup(self):
+        mesh = {
+            "pts": [(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)],
+            "tris": [(0, 1, 2), (2, 1, 3)],
+            "fm": type("Faces", (), {
+                "vtxGrp": lambda self, tri: tri
+            })(),
+        }
+        info = {
+            "piece": 0, "mesh": mesh, "triangles": mesh["tris"],
+            "keep": [0, 1], "groups": {0, 1},
+            "bounds": (0, 0, 0, 1, 1, 0),
+        }
+        palette_rgb = {
+            4: (0.8, 0.156862745, 0.141176471),
+            40: (1.0, 0.8, 0.4),
+        }
+        with patch("converter.face_colour.load_colour_mesh_sidecar",
+                   return_value=None), \
+             patch("converter.face_colour._ug_part_payload",
+                   return_value=b"payload"), \
+             patch("converter.face_colour._face_rows",
+                   return_value=[(9, 10, 4), (9, 11, 40)]), \
+             patch("converter.face_colour.body_colour_by_tag",
+                   return_value={}), \
+             patch("converter.face_colour.default_palette",
+                   return_value={4: (1, 1, 0), 40: (1, 0, 1)}), \
+             patch("converter.face_colour.prt_jt.open_prt",
+                   return_value={"UG_PART/JT": type("Stream", (), {
+                       "data": b"jt", "name": "UG_PART/JT"})()}), \
+             patch("converter.face_colour._piece_lods",
+                   return_value={}), \
+             patch("converter.face_colour.piece_infos",
+                   return_value=[info]), \
+             patch("converter.face_colour.load_sidecar",
+                   return_value=None):
+            result = decorate_colour_mesh(
+                "part.prt", palette_rgb=palette_rgb)
+        self.assertEqual(
+            {tuple(entry["color"]) for entry in result},
+            set(palette_rgb.values()))
+
     def test_single_nx_body_palette_paints_when_face_join_is_unresolved(self):
         mesh = {
             "pts": [(0, 0, 0), (1, 0, 0), (0, 1, 0)],

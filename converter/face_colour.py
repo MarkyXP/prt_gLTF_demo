@@ -35,6 +35,10 @@ from converter.face_matching import (
     tag_signature as _tag_signature,
 )
 from converter.face_identity import join_face_triangles, load_sidecar
+from converter.face_colour_sidecar import (
+    join_colour_meshes,
+    load_colour_mesh_sidecar,
+)
 from converter.face_pieces import (
     bounds_distance as _bounds_distance,
     display_lod as _display_lod,
@@ -209,18 +213,38 @@ def _mesh_record(mesh, triangles, triangle_indices, lane_indices=None,
     return {"t": record, **extra}
 
 
-def decorate_colour_mesh(part_path):
+def decorate_colour_mesh(part_path, palette_rgb=None):
     """Overlay NX face and body colours on every decoded JT piece.
 
-    Returns None when the part has no face-colour rows or no non-white face
-    or body colour.  Otherwise every decoded piece is emitted, including
-    pieces with no matching colour record.  Matched entries keep their
-    ``jtPiece`` and mark ``colourSource`` as ``nx`` so body-colour fallbacks do
-    not overwrite them.
+    A current, complete hash-bound colour sidecar takes precedence. Without a
+    valid sidecar, the function uses the decoded NX face/body-colour records.
+    Matched entries keep their ``jtPiece`` and identify their colour source so
+    body-colour fallbacks do not overwrite them.
 
     > example
     > decorate_colour_mesh("fascia.prt") -> [{"t": mesh, "color": rgb}, ...]
     """
+    colour_sidecar = load_colour_mesh_sidecar(part_path)
+    if colour_sidecar is not None:
+        pieces = prt_jt.extract_meshes(part_path)
+        mesh_entries = [
+            (piece, mesh) for piece in pieces
+            for mesh in piece.get("meshes", [])
+            if mesh.get("pts") and mesh.get("tris")
+        ]
+        joined = join_colour_meshes(
+            [mesh for _piece, mesh in mesh_entries], colour_sidecar)
+        if joined is not None:
+            collection = []
+            for mesh_index, (piece, mesh) in enumerate(mesh_entries):
+                for rgb, selected in joined[mesh_index].items():
+                    collection.append(_mesh_record(
+                        mesh, mesh["tris"], selected, selected,
+                        stream=piece["stream"], jtPiece=piece["piece"],
+                        color=list(rgb), doubleSided=True,
+                        colourSource="nx-face-sidecar"))
+            return collection
+
     payload = _ug_part_payload(part_path)
     if payload is None:
         return None
@@ -237,6 +261,8 @@ def decorate_colour_mesh(part_path):
         body_records = {}
 
     table = default_palette()
+    if palette_rgb:
+        table.update(palette_rgb)
     sidecar = load_sidecar(part_path)
 
     def is_coloured(palette):

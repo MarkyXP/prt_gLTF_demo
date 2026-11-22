@@ -75,6 +75,46 @@ class SceneTests(unittest.TestCase):
 
 
 class ColourTests(unittest.TestCase):
+    def test_body_palette_fallback_keeps_original_order_after_filtering(self):
+        palette_order = [
+            {"stream": "jt", "jtPiece": index,
+             "t": {"pts": [(index, 0, 0), (index + 1, 1, 1)]},
+             "color": None}
+            for index in range(3)
+        ]
+        filtered = palette_order[1:]
+        records = [
+            (1, (1, 1, 1), None),
+            (29, (0.2, 1.0, 0.2), None),
+            (216, (0, 0, 0), None),
+        ]
+        with patch("color_index.body_palette_bounds_records",
+                   return_value=records), \
+             patch("color_index.body_translucency", return_value=0), \
+             self.assertLogs("application.resolver.display", "WARNING"):
+            painted, dropped = paint_body_display(
+                "test.prt", filtered, palette_order=palette_order)
+        self.assertEqual(dropped, 0)
+        self.assertEqual(
+            [entry["color"] for entry in painted],
+            [[0.2, 1.0, 0.2], [0, 0, 0]])
+
+    def test_nx_sidecar_colour_is_not_overwritten_by_body_palette(self):
+        collection = [{
+            "stream": "jt",
+            "jtPiece": 0,
+            "t": {"pts": [(0, 0, 0), (1, 1, 1)]},
+            "color": [0.2, 0.2, 0.2],
+            "colourSource": "nx-face-sidecar",
+        }]
+        records = [(1, (1, 0, 0), None)]
+        with patch("color_index.body_palette_bounds_records",
+                   return_value=records), \
+             patch("color_index.body_translucency", return_value=0):
+            painted, dropped = paint_body_display("test.prt", collection)
+        self.assertEqual(dropped, 0)
+        self.assertEqual(painted[0]["color"], [0.2, 0.2, 0.2])
+
     def test_matches_shuffled_records_and_preserves_explicit_colour(self):
         collection = [
             {"stream": "jt", "jtPiece": 0, "t": {"pts": [(0, 0, 0), (1, 1, 1)]}, "color": None},
