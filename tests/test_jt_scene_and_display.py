@@ -99,13 +99,13 @@ class ColourTests(unittest.TestCase):
             [entry["color"] for entry in painted],
             [[0.2, 1.0, 0.2], [0, 0, 0]])
 
-    def test_nx_sidecar_colour_is_not_overwritten_by_body_palette(self):
+    def test_nx_face_colour_is_not_overwritten_by_body_palette(self):
         collection = [{
             "stream": "jt",
             "jtPiece": 0,
             "t": {"pts": [(0, 0, 0), (1, 1, 1)]},
             "color": [0.2, 0.2, 0.2],
-            "colourSource": "nx-face-sidecar",
+            "colourSource": "nx",
         }]
         records = [(1, (1, 0, 0), None)]
         with patch("color_index.body_palette_bounds_records",

@@ -34,11 +34,6 @@ from converter.face_matching import (
     face_group_mapping,
     tag_signature as _tag_signature,
 )
-from converter.face_identity import join_face_triangles, load_sidecar
-from converter.face_colour_sidecar import (
-    join_colour_meshes,
-    load_colour_mesh_sidecar,
-)
 from converter.face_pieces import (
     bounds_distance as _bounds_distance,
     display_lod as _display_lod,
@@ -213,38 +208,15 @@ def _mesh_record(mesh, triangles, triangle_indices, lane_indices=None,
     return {"t": record, **extra}
 
 
-def decorate_colour_mesh(part_path, palette_rgb=None):
+def decorate_colour_mesh(part_path):
     """Overlay NX face and body colours on every decoded JT piece.
 
-    A current, complete hash-bound colour sidecar takes precedence. Without a
-    valid sidecar, the function uses the decoded NX face/body-colour records.
     Matched entries keep their ``jtPiece`` and identify their colour source so
     body-colour fallbacks do not overwrite them.
 
     > example
     > decorate_colour_mesh("fascia.prt") -> [{"t": mesh, "color": rgb}, ...]
     """
-    colour_sidecar = load_colour_mesh_sidecar(part_path)
-    if colour_sidecar is not None:
-        pieces = prt_jt.extract_meshes(part_path)
-        mesh_entries = [
-            (piece, mesh) for piece in pieces
-            for mesh in piece.get("meshes", [])
-            if mesh.get("pts") and mesh.get("tris")
-        ]
-        joined = join_colour_meshes(
-            [mesh for _piece, mesh in mesh_entries], colour_sidecar)
-        if joined is not None:
-            collection = []
-            for mesh_index, (piece, mesh) in enumerate(mesh_entries):
-                for rgb, selected in joined[mesh_index].items():
-                    collection.append(_mesh_record(
-                        mesh, mesh["tris"], selected, selected,
-                        stream=piece["stream"], jtPiece=piece["piece"],
-                        color=list(rgb), doubleSided=True,
-                        colourSource="nx-face-sidecar"))
-            return collection
-
     payload = _ug_part_payload(part_path)
     if payload is None:
         return None
@@ -261,9 +233,6 @@ def decorate_colour_mesh(part_path, palette_rgb=None):
         body_records = {}
 
     table = default_palette()
-    if palette_rgb:
-        table.update(palette_rgb)
-    sidecar = load_sidecar(part_path)
 
     def is_coloured(palette):
         if palette is None:
@@ -299,35 +268,6 @@ def decorate_colour_mesh(part_path, palette_rgb=None):
         keep = info["keep"]
         tag = assignments.get(piece)
         rows = blocks.get(tag) if tag is not None else None
-        if sidecar is not None and tag is not None and rows is not None:
-            identity = join_face_triangles(mesh, sidecar)
-            row_faces = {face_id for face_id, _palette in rows}
-            if identity is not None and set(identity) == row_faces:
-                palettes_by_face = dict(
-                    (face_id, palette)
-                    for face_id, palette in (rows or []))
-                by_colour = {}
-                for face_id, selected in identity.items():
-                    palette = palettes_by_face.get(face_id)
-                    if palette is None:
-                        palette = body_records.get(tag, {}).get("palette")
-                    rgb = table.get(palette, _WHITE) \
-                        if palette is not None else _WHITE
-                    by_colour.setdefault(tuple(rgb), []).extend(selected)
-                for rgb, selected in by_colour.items():
-                    lane_for = {
-                        tri: position for position, tri in enumerate(keep)}
-                    selected = [tri for tri in selected if tri in lane_for]
-                    if not selected:
-                        continue
-                    collection.append(_mesh_record(
-                        mesh, triangles, selected,
-                        [lane_for[tri] for tri in selected],
-                        stream=jt_stream.name, jtPiece=piece,
-                        color=list(rgb), doubleSided=True,
-                        colourSource="nx-face-identity"))
-                if by_colour:
-                    continue
         body_palette = (
             body_records.get(tag, {}).get("palette")
             if tag is not None else None)

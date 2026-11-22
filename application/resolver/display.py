@@ -214,31 +214,6 @@ def _linked_history_keys(path, collection, states, matches):
     return keys
 
 
-def drop_suppressed_feature_bodies(
-    path: str, collection: list[dict]
-) -> tuple[list[dict], int]:
-    """Drop JT pieces with verified identity to a suppressed NX feature.
-
-    The source-hash-bound manifest joins a state record and a JT piece only
-    after controlled NX toggles and a complete triangle-identity match.
-    Missing, stale, malformed, or ambiguous evidence keeps the geometry.
-    """
-    try:
-        from converter.feature_identity import suppressed_feature_piece_keys
-        hidden_keys = suppressed_feature_piece_keys(path)
-    except Exception:
-        LOGGER.exception(
-            "Failed to read NX feature-to-JT identity for %s", path)
-        return collection, 0
-    if not hidden_keys:
-        return collection, 0
-    kept = [
-        entry for entry in collection
-        if (entry.get("stream"), entry.get("jtPiece")) not in hidden_keys
-    ]
-    return kept, len(collection) - len(kept)
-
-
 def drop_undisplayed_bodies(path: str,
                             collection: list[dict]) -> tuple[list[dict], int]:
     """Remove JT pieces positively bound to non-displayed NX bodies.

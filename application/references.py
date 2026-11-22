@@ -17,20 +17,12 @@ time.
 """
 from __future__ import annotations
 
-import hashlib
-import logging
 import os
-import shutil
 from pathlib import Path
 
 import extref_references
 import parasolid
 import prt_jt
-
-from converter.face_colour_sidecar import (
-    load_colour_mesh_sidecar,
-    sidecar_path as colour_sidecar_path,
-)
 from .config import BASE_DIR
 from .reference_index import find_sub_assembly, reference_basename
 from .suppression import (
@@ -39,8 +31,6 @@ from .suppression import (
     is_suppressed_child,
     suppressed_child_names,
 )
-
-LOGGER = logging.getLogger(__name__)
 
 GENERIC_PART_REFERENCES = {
     "model_template_nx10.prt",
@@ -184,11 +174,6 @@ def copy_referenced_parts(data: bytes, target_dir: str | os.PathLike,
     """
     copied = []
     roots = reference_roots(data)
-    root_path = Path(target_dir) / "part.prt"
-    root_source = find_named_part(
-        source_name, roots, parent_path=root_path)
-    if root_source is not None:
-        copy_colour_sidecar(root_source, root_path)
     ref_names = meaningful_part_references(data, source_name)
     suppressed = (
         frozenset(suppressed_child_names(data))
@@ -206,47 +191,10 @@ def copy_referenced_parts(data: bytes, target_dir: str | os.PathLike,
         path = str(path)
         target = os.path.join(target_dir, os.path.basename(path))
         if os.path.abspath(path).lower() == os.path.abspath(target).lower():
-            copy_colour_sidecar(path, target)
             copied.append(path)
             continue
         if not os.path.exists(target):
             with open(path, "rb") as source, open(target, "wb") as target_file:
                 target_file.write(source.read())
-        copy_colour_sidecar(path, target)
         copied.append(path)
     return copied
-
-
-def copy_colour_sidecar(source_part: str | os.PathLike,
-                        target_part: str | os.PathLike) -> bool:
-    """Copy a valid adjacent colour sidecar when part hashes match exactly."""
-    manifest = load_colour_mesh_sidecar(source_part)
-    if manifest is None:
-        return False
-    try:
-        target_hash = hashlib.sha256(Path(target_part).read_bytes()).hexdigest()
-    except OSError:
-        LOGGER.warning(
-            "Cannot read staged part while copying face colours: %s",
-            target_part, exc_info=True)
-        return False
-    if target_hash != manifest["sourceSha256"]:
-        return False
-
-    source_sidecar = colour_sidecar_path(source_part)
-    target_sidecar = colour_sidecar_path(target_part)
-    if target_sidecar.exists():
-        if load_colour_mesh_sidecar(target_part) is not None:
-            return True
-        LOGGER.warning(
-            "Refusing to overwrite invalid staged face-colour sidecar: %s",
-            target_sidecar)
-        return False
-    try:
-        shutil.copyfile(source_sidecar, target_sidecar)
-    except OSError:
-        LOGGER.warning(
-            "Cannot stage face-colour sidecar %s as %s",
-            source_sidecar, target_sidecar, exc_info=True)
-        return False
-    return load_colour_mesh_sidecar(target_part) is not None

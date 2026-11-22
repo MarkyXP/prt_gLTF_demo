@@ -1,7 +1,5 @@
 """Reference resolution tests: exact EXTREF names win over regex strings."""
 
-import hashlib
-import json
 import struct
 import sys
 import tempfile
@@ -18,10 +16,6 @@ from application.references import (  # noqa: E402
     copy_referenced_parts,
     meaningful_part_references,
     reference_roots,
-)
-from converter.face_colour_sidecar import (
-    load_colour_mesh_sidecar,
-    sidecar_path,
 )
 from test_extref import extref_stream, handle_record  # noqa: E402
 
@@ -48,57 +42,6 @@ def splm_container(files):
 
 
 class ReferenceResolutionTests(unittest.TestCase):
-    def test_uploaded_root_stages_only_matching_colour_sidecar(self):
-        source_data = b"source part bytes"
-        triangle = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
-        sidecar_data = {
-            "version": 1,
-            "sourceSha256": hashlib.sha256(source_data).hexdigest(),
-            "triangleCount": 1,
-            "colours": [{"rgb": [1, 0, 0], "triangles": [triangle]}],
-        }
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder) / "library" / "root.prt"
-            stage = Path(folder) / "stage"
-            root.parent.mkdir()
-            stage.mkdir()
-            root.write_bytes(source_data)
-            sidecar_path(root).write_text(
-                json.dumps(sidecar_data), encoding="utf-8")
-            staged_root = stage / "part.prt"
-            staged_root.write_bytes(source_data)
-
-            with patch(
-                    "application.references.reference_roots",
-                    return_value=[]), \
-                 patch(
-                    "application.references.find_named_part",
-                    return_value=root), \
-                 patch(
-                    "application.references.meaningful_part_references",
-                    return_value=[]):
-                copy_referenced_parts(source_data, stage, "root.prt")
-
-            self.assertIsNotNone(load_colour_mesh_sidecar(staged_root))
-
-            mismatched_stage = Path(folder) / "mismatched"
-            mismatched_stage.mkdir()
-            mismatched_root = mismatched_stage / "part.prt"
-            mismatched_root.write_bytes(b"different uploaded part")
-            with patch(
-                    "application.references.reference_roots",
-                    return_value=[]), \
-                 patch(
-                    "application.references.find_named_part",
-                    return_value=root), \
-                 patch(
-                    "application.references.meaningful_part_references",
-                    return_value=[]):
-                copy_referenced_parts(
-                    b"different uploaded part", mismatched_stage, "root.prt")
-
-            self.assertFalse(sidecar_path(mismatched_root).exists())
-
     def test_exact_extref_names_win_over_regex_strings(self):
         extref_payload = extref_stream(
             ["exact_child.prt", "O", "D:\\exact", "RM"],

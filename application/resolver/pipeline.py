@@ -31,7 +31,6 @@ from .accounting import (
     ReferenceCallback,
 )
 from .display import (
-    drop_suppressed_feature_bodies,
     drop_unassociated_envelope_boxes,
     drop_undisplayed_bodies,
     paint_body_display,
@@ -223,8 +222,6 @@ def _convert_part_path(path: str | Path, seen: set[str],
     jt_palette_order = tuple(jt_collection)
     jt_ms = (time.perf_counter() - step_started) * 1000
     record_rmfastload(resolution, logical_name, path, data, jt_collection)
-    jt_collection, dropped_suppressed_features = (
-        drop_suppressed_feature_bodies(str(path), jt_collection))
     jt_collection, dropped_undisplayed = drop_undisplayed_bodies(
         str(path), jt_collection)
     jt_collection, dropped_envelopes = drop_unassociated_envelope_boxes(
@@ -234,13 +231,6 @@ def _convert_part_path(path: str | Path, seen: set[str],
         LOGGER.info(
             "part=%s step=jt result=dropped-undisplayed meshes=%d",
             logical_name, dropped_undisplayed)
-    if dropped_suppressed_features:
-        count_skip(
-            context, "dropped_suppressed_features",
-            dropped_suppressed_features)
-        LOGGER.info(
-            "part=%s step=jt result=dropped-suppressed-feature meshes=%d",
-            logical_name, dropped_suppressed_features)
     if dropped_envelopes:
         LOGGER.info(
             "part=%s step=jt result=dropped-unassociated-envelope meshes=%d",
