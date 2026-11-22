@@ -47,7 +47,7 @@ from typing import Optional
 PaletteEntry = namedtuple("PaletteEntry", "index name rgb offset")
 
 _HEAD_SIGNATURE = b"\x01\x80"
-_ATOM_HEADS = (b"\x01\x80", b"\x80\xa1", b"\x80\xa5")
+_ATOM_HEADS = (b"\x01\x80", b"\x80\x9b", b"\x80\xa1", b"\x80\xa5")
 
 
 def ug_part_payload(part_path: str) -> bytes:
@@ -199,8 +199,9 @@ def _row_before_name(payload: bytes, name_at: int):
 
     The verified grammar is ``<head> [r g b] 03 <len+name+00>`` and the RGB
     triple precedes its name.  Heads seen in real parts are ``01 80 XX``
-    (current NX), ``80 a1`` (transitional OLE roster) and ``80 a5`` (legacy
-    OLE table).  Only accept a row whose head, atom run, and ``03``
+    (current NX), ``80 9b`` (early OLE roster), ``80 a1`` (transitional OLE
+    roster) and ``80 a5`` (legacy OLE table).  Only accept a row whose head,
+    atom run, and ``03``
     terminator line up with the name byte-for-byte; parts that store a bare
     name roster (no per-entry RGB rows) then yield no rows instead of garbage
     colours.

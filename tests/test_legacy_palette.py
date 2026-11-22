@@ -19,6 +19,8 @@ ASSET = (Path(__file__).resolve().parent / "Assets"
          / "oem320_pump_2107CHI20TFEL_220_240v.prt")
 ASSET368 = (Path(__file__).resolve().parent / "Assets"
             / "oem368_push_button_switch_arcolectric.prt")
+ASSET3200 = (Path(__file__).resolve().parent / "Assets"
+             / "oem3200_press_sensor_smc_PSE564-N01.prt")
 
 
 def atom(value):
@@ -34,20 +36,20 @@ def atom(value):
         return b"\x01"
     data = bytearray(struct.pack(">d", value * 4.0))
     if 0x40 <= data[0] <= 0x5F or 0xC0 <= data[0] <= 0xDF:
-        data[0] = (data[0] - 0x10) & 0xFF
+        data[0] = (data[0] + 0x10) & 0xFF
         return bytes(data[:4])
-    data[0] = (data[0] + 0x10) & 0xFF
+    data[0] = (data[0] - 0x10) & 0xFF
     return bytes(data)
 
 
-def legacy_row(name, rgb, slot):
-    """Encode one legacy ``<80 a5><rgb>03<len><name><00><slot>`` row.
+def legacy_row(name, rgb, slot, head=b"\x80\xa5"):
+    """Encode one legacy ``<head><rgb>03<len><name><00><slot>`` row.
 
     > example
     > legacy_row("Blue", (0.0, 0.0, 1.0), 3)[:2] -> b"\\x80\\xa5"
     """
     body = name.encode("ascii") + b"\x00" + bytes([slot])
-    return (b"\x80\xa5" + b"".join(atom(value) for value in rgb)
+    return (head + b"".join(atom(value) for value in rgb)
             + b"\x03" + bytes([len(body)]) + body)
 
 
@@ -90,6 +92,16 @@ class LegacyPaletteTests(unittest.TestCase):
         table = palette_table(payload)
         self.assertEqual(table[1], (0.0, 0.0, 1.0))
         self.assertEqual(table[3], (0.0, 1.0, 0.0))
+
+    def test_early_ole_head_80_9b_decodes_standard_rows(self):
+        payload = b"\x03\x0cBackground\x00\x02"
+        payload += legacy_row("Blue", (0.0, 0.0, 1.0), 3, head=b"\x80\x9b")
+        payload += legacy_row("Orange", (0.8, 0.5, 0.3), 12, head=b"\x80\x9b")
+        payload += b"\x00" * 80
+        rows = palette_rows(payload)
+        self.assertEqual([row[0] for row in rows], ["Blue", "Orange"])
+        self.assertAlmostEqual(rows[0][1][2], 1.0)
+        self.assertAlmostEqual(rows[1][1][0], 0.8, places=3)
 
     def test_legacy_body_row_without_bounds_is_a_colour_site(self):
         record = (b"\x47\x01\x04\x01\xc0\x40\x84\x00"
@@ -141,6 +153,20 @@ class Oem368PaletteTests(unittest.TestCase):
         self.assertIn((0.2, 0.2, 0.2), colours)
         self.assertIn((1.0, 0.8, 0.4), colours)
         self.assertIn((0.8, 0.157, 0.141), colours)
+
+
+@unittest.skipUnless(ASSET3200.is_file(), "oem3200 fixture not present")
+class Oem3200PaletteTests(unittest.TestCase):
+    def test_early_ole_roster_decodes_every_slot(self):
+        rows = palette_rows(ug_part_payload(str(ASSET3200)))
+        self.assertEqual(len(rows), 216)
+        self.assertTrue(all(rgb is not None for _name, rgb, _off in rows))
+
+    def test_press_sensor_body_is_orange_not_factory_index_11(self):
+        table = palette_table(ug_part_payload(str(ASSET3200)))
+        self.assertAlmostEqual(table[11][0], 0.843137, places=3)
+        self.assertAlmostEqual(table[11][1], 0.541176, places=3)
+        self.assertAlmostEqual(table[11][2], 0.317647, places=3)
 
 
 if __name__ == "__main__":
