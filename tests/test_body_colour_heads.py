@@ -48,6 +48,20 @@ class NewBodyHeadTests(unittest.TestCase):
             b"\xc0\x40\x84\x00", b"\x80\xab", b"\x80\xf2\x84\xb5")
         self.assertEqual(colour_sites(payload), [])
 
+    def test_wide_descriptor_without_02_prefix_binds(self):
+        payload = body_row(
+            b"\xc0\x40\x84\x00", b"\x80\x90", b"\x80\xe6\x0f")
+        self.assertEqual(
+            [(site.token, site.kind) for site in colour_sites(payload)],
+            [(144, "body")])
+        self.assertEqual(_body_tag(b"\x80\xe6\x0f\x01\x93\x8e", 0), 15)
+
+    def test_leading_03_descriptor_binds(self):
+        payload = body_row(b"\xc0\x40\x04\x00", b"\x0c", b"\x03\x0e")
+        self.assertEqual(
+            [(site.token, site.kind) for site in colour_sites(payload)],
+            [(11, "body")])
+
     def test_head_46_04_is_a_body_colour_site(self):
         payload = body_row(b"\xc0\x46\x04\x00", b"\x10", b"\x02\x1d")
         self.assertEqual(

@@ -85,8 +85,11 @@ def _legacy_body_token(payload, head_offset):
 
     The legacy head family shares the body grammar but may store a wide tag
     token or a leading descriptor token before the tag, so the run is
-    validated by consuming every token up to ``01 93 8e``. The ``c0 46 04 00``
-    head additionally bounds its layer and tag values.
+    validated by consuming every token up to ``01 93 8e``. Rows with the
+    classic ``02 <tag>`` descriptor keep their long-standing acceptance; the
+    wider descriptor forms additionally bound the tag to 0..1023 because
+    unrelated object rows can otherwise satisfy the run. The ``c0 46 04 00``
+    head keeps its layer and tag bounds.
 
     > example
     > _legacy_body_token(payload, 846458) -> 98
@@ -96,6 +99,8 @@ def _legacy_body_token(payload, head_offset):
         return None
     body = head_offset + 4 + token[1]
     head = payload[head_offset:head_offset + 4]
+    if payload[body:body + 1] == b"\x02":
+        return token[0] if _body_tag(payload, body) is not None else None
     if head == bytes([0xC0, 0x46, 0x04, 0x00]):
         layer, width = _decode_tag_token(payload, body)
         if layer is None or not 0 <= layer <= 255:
@@ -107,7 +112,10 @@ def _legacy_body_token(payload, head_offset):
         if payload[tail:tail + len(BODY_TAIL)] != BODY_TAIL:
             return None
         return token[0]
-    return token[0] if _body_tag(payload, body) is not None else None
+    tag = _body_tag(payload, body)
+    if tag is None or not 0 <= tag <= 1023:
+        return None
+    return token[0]
 
 
 def _decode_tag_token(data, at):
