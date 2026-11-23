@@ -15,6 +15,7 @@ Pure stdlib; no third-party dependency.
 """
 from __future__ import annotations
 
+from .names import family_name_matches_child
 from .tokens import (
     CONNECTOR_PREFIX,
     connector_id,
@@ -120,15 +121,42 @@ def family_key(connector, part_name=None):
     return ("conn", bytes(connector[:CONNECTOR_PREFIX]))
 
 
-def cluster_families(data, frames):
+def _name_joins(name, valid_names):
+    """Whether a decoded frame name joins a resolved stem or roster name.
+
+    > example
+    >>> _name_joins("GEAR", ["gear.prt"])
+    True
+    >>> _name_joins(" INHERITED", ["gear.prt"])
+    False
+    """
+    if not name:
+        return False
+    label = str(name).strip()
+    if not label:
+        return False
+    return any(family_name_matches_child(("name", label), str(candidate))
+               for candidate in valid_names)
+
+
+def _accepted_name(name, valid_names):
+    """Keep a decoded frame name only when it joins a known component."""
+    if valid_names is None:
+        return name
+    return name if _name_joins(name, valid_names) else None
+
+
+def cluster_families(data, frames, valid_names=None):
     """Group placement frames into component-master families.
 
     Returns ``[(key, [frame, ...]), ...]`` ordered by the first frame's
     payload offset. Each frame is annotated in place with its connector,
     child name, and trailing object index. A child name takes priority when
     present because some writers omit connector ids on most frames, which
-    would otherwise merge distinct components into one family. Older
-    layouts continue to group by connector prefix:
+    would otherwise merge distinct components into one family. A decoded
+    name is only accepted when it joins a resolved stem, roster prototype,
+    or exact EXTREF entry (``valid_names``); otherwise the frame keeps its
+    connector family. Older layouts continue to group by connector prefix:
 
         screws       e0 58 76 d4 6e 6b / 69 / 63  -> 3 instances
         concentric   e0 60 75 47 56 6c / 56 69    -> 2 instances
@@ -144,8 +172,8 @@ def cluster_families(data, frames):
             if index + 1 < len(ordered_frames) else None)
         frame["connector"] = connector_id(
             data, frame, before=previous_end, after=next_offset)
-        frame["child_name"] = frame_child_name(
-            data, frame, limit=next_offset)
+        frame["child_name"] = _accepted_name(
+            frame_child_name(data, frame, limit=next_offset), valid_names)
         frame["object_index"] = placement_object_index(data, frame)
         frame["uuid"] = placement_uuid(data, frame)
     buckets = {}

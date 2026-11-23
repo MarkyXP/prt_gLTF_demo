@@ -56,7 +56,8 @@ def convert_to_glb(data: bytes, part_name: str | None = None,
                    extra_parts: list[tuple[str, bytes]] | None = None,
                    progress: ProgressCallback | None = None,
                    artifact: ArtifactCallback | None = None,
-                   on_references: ReferenceCallback | None = None):
+                   on_references: ReferenceCallback | None = None,
+                   source_dir: str | os.PathLike | None = None):
     """Convert .prt bytes to ``(glb_bytes, stats)``.
 
     > example
@@ -77,7 +78,8 @@ def convert_to_glb(data: bytes, part_name: str | None = None,
         source_name = Path(part_name or "part").name
         if Path(source_name).suffix.lower() != ".prt":
             source_name += ".prt"
-        copy_referenced_parts(data, temp_dir, source_name)
+        copy_referenced_parts(data, temp_dir, source_name,
+                              source_dir=source_dir)
         try:
             colour_index = part_colour_index(source)
         except Exception:
@@ -164,6 +166,8 @@ def convert_to_glb(data: bytes, part_name: str | None = None,
         "skipped_hidden": resolution.get("skipped_hidden", 0),
         "dropped_translucent": resolution.get("dropped_translucent", 0),
         "dropped_undisplayed": resolution.get("dropped_undisplayed", 0),
+        "unplaced_components": resolution.get("unplaced_components", 0),
+        "result": resolution.get("result"),
         "colour_index": colour_index,
         "rmfastload": resolution.get("rmfastload", []),
         "assemblies": summaries,
@@ -189,6 +193,11 @@ def convert_to_files(source: str | Path, output: str | Path):
     collection = convert_part_path(
         source, resolution=resolution, parallel_workers=workers)
     if not collection:
+        status = resolution.get("result") or {}
+        if status.get("status") == "drawings-only":
+            raise ValueError(
+                "drawings-only part: no 3D geometry (no JT, Parasolid, or "
+                "references); embedded drawing previews are available")
         raise ValueError("no decodable mesh in this .prt file")
     try:
         colour_index = part_colour_index(str(source))

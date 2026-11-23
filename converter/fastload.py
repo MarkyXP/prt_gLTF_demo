@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import struct
 
+import extref_references
 import fastload_prototype
 
 ENVELOPE_LEN = 12
@@ -276,12 +277,10 @@ def _select_candidate(candidates):
     return selected
 
 
-def parse_roster(entry):
+def parse_roster(entry, known_stems=None):
     """Parse a bounded ``/Root/FastLoad/Structure`` payload, or empty.
 
-    Missing envelope bytes, absent anchors, unknown lane forms, out-of-range
-    indices, and malformed strings all yield an empty roster rather than an
-    exception.
+    Malformed data yields an empty roster; prototype-first is retried last.
 
     > example
     >>> parse_roster(b"not a structure stream")["prototypes"]
@@ -299,17 +298,14 @@ def parse_roster(entry):
             candidates.append(candidate)
     selected = _select_candidate(candidates)
     if selected is None:
-        if ROSTER_ANCHOR not in payload:
-            legacy = fastload_prototype.parse_prototype_first(payload)
-            if legacy is not None:
-                return legacy
+        legacy = fastload_prototype.parse_prototype_first(payload, known_stems)
+        if legacy is not None:
+            return legacy
         return empty_roster()
-    prototypes = [
-        {"ordinal": ordinal, "name": name}
-        for ordinal, name in enumerate(selected["prototypes"])]
-    uuids = [
-        {"ordinal": ordinal, "uuid": value}
-        for ordinal, value in enumerate(selected["uuids"])]
+    prototypes = [{"ordinal": o, "name": n}
+                  for o, n in enumerate(selected["prototypes"])]
+    uuids = [{"ordinal": o, "uuid": u}
+             for o, u in enumerate(selected["uuids"])]
     occurrences = []
     for ordinal in range(selected["occurrence_count"]):
         uuid_index = selected["uuid_indices"][ordinal]
@@ -360,7 +356,11 @@ def roster_from_streams(streams):
         if _is_structure_name(name)]
     if len(matches) != 1:
         return empty_roster()
-    return parse_roster(bytes(matches[0]))
+    try:
+        known = extref_references.reference_names(streams)
+    except Exception:
+        known = []
+    return parse_roster(bytes(matches[0]), known_stems=known)
 
 
 def _string(value, tag=4):

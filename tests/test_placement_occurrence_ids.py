@@ -61,6 +61,31 @@ class PlacementOccurrenceIdTests(unittest.TestCase):
         self.assertEqual(bundle[0]["id"], "placed")
         self.assertIn("pump-b: no feasible child; skipped unplaced", notes)
 
+    def test_empty_bundle_returns_none_for_unplaced_fallback(self):
+        family_key = ("pump",)
+        frame = {
+            "R": ((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+            "t": (0, 0, 0),
+        }
+        with (
+            patch("application.placement.prt_jt.open_prt", return_value={}),
+            patch("application.placement.child_extent_mm", return_value=None),
+            patch(
+                "application.placement.assembly_pairing.pair_instances",
+                return_value=({}, ["no feasible child"]),
+            ),
+        ):
+            bundle, notes = placement_bundle(
+                ["pump"],
+                {"pump": [{"id": "unplaced"}]},
+                {"pump": "pump.prt"},
+                [(family_key, [frame])],
+            )
+
+        self.assertIsNone(bundle)
+        self.assertIn("no child assignment; no placement matrices emitted",
+                      notes)
+
 
 if __name__ == "__main__":
     unittest.main()

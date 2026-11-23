@@ -67,6 +67,35 @@ def _find_stream(streams: dict, names: frozenset[str]):
     return None
 
 
+def _find_drawing_preview(streams: dict):
+    """First drawing-sheet preview in deterministic sheet order.
+
+    Drawing/instruction parts have no ``images/preview`` but carry one
+    preview per sheet under ``images/drawings/<sheet>/preview``. The lowest
+    sheet name is authoritative so the fallback is deterministic.
+
+    > example
+    > _find_drawing_preview({
+    >     "images/drawings/SHT2/preview": b"b",
+    >     "images/drawings/SHT1/preview": b"a",
+    > }) -> b"a"
+    """
+    prefix = "images/drawings/"
+    suffix = "/preview"
+    candidates = []
+    for name, stream in streams.items():
+        normalized = _normalize_stream_name(name)
+        if not (normalized.startswith(prefix) and normalized.endswith(suffix)):
+            continue
+        sheet = normalized[len(prefix):-len(suffix)]
+        if sheet and "/" not in sheet:
+            candidates.append((sheet.casefold(), sheet, stream))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[0][2]
+
+
 def _load_streams(source):
     """Read a path or raw container bytes into a stream mapping.
 
@@ -276,6 +305,13 @@ def read_part_info(source) -> dict:
             preview = parse_preview(preview_stream.data)
             if preview is not None:
                 info["preview"] = preview
+        if info["preview"] is None:
+            drawing_stream = _find_drawing_preview(streams)
+            if drawing_stream is not None:
+                preview = parse_preview(drawing_stream.data)
+                if preview is not None:
+                    info["preview"] = preview
+                    info["preview_source"] = "drawing-sheet"
         arrangement_stream = _find_stream(streams, _ARRANGEMENT_NAMES)
         if arrangement_stream is not None:
             info["arrangements"] = parse_arrangements(arrangement_stream.data)

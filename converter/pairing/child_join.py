@@ -248,11 +248,15 @@ def ambiguous_opaque_children(families, stems, roster=None, extref_names=()):
         if str(name).replace("\\", "/").rsplit("/", 1)[-1].casefold()
         in candidate_names
     }
+    # Exact EXTREF entries are not per-occurrence identity. A single relevant
+    # child leaves no choice; two or more still cannot tell an opaque family
+    # apart, so the pairing stays ambiguous and the caller renders unplaced.
+    uniquely_named = len(relevant_extrefs) == 1
     return (
         bool(families)
         and len(stems) > 1
         and not roster_has_data
-        and not relevant_extrefs
+        and not uniquely_named
         and all(
             key[0] == "conn"
             and all(not frame.get("child_name") and not frame.get("uuid")

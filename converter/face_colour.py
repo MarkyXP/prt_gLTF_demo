@@ -34,6 +34,7 @@ from converter.face_matching import (
     face_group_mapping,
     tag_signature as _tag_signature,
 )
+from converter.jt.geometry import is_axis_aligned_box
 from converter.face_pieces import (
     bounds_distance as _bounds_distance,
     display_lod as _display_lod,
@@ -47,6 +48,26 @@ from converter.palette import palette_table
 
 _FACE_SELECTOR = b"\x93\x8c"
 _WHITE = (1.0, 1.0, 1.0)
+
+
+def _bounds_occludes(outer, inner):
+    """Whether an outer AABB contains the inner box on at least two axes.
+
+    > example
+    > _bounds_occludes((0, 0, 0, 2, 2, 2), (1, 1, 1, 1.5, 1.5, 1.5))
+    True
+    """
+    if outer is None or inner is None:
+        return False
+    contained = sum(
+        1 for axis in range(3)
+        if outer[axis] <= inner[axis] + 1e-6
+        and outer[axis + 3] >= inner[axis + 3] - 1e-6)
+    overlaps = all(
+        outer[axis] <= inner[axis + 3] + 1e-6
+        and outer[axis + 3] >= inner[axis] - 1e-6
+        for axis in range(3))
+    return contained >= 2 and overlaps
 
 
 def _token(buf, at):
@@ -415,9 +436,34 @@ def decorate_colour_mesh(part_path):
     piece_meshes = {}
     for piece_data in prt_jt.extract_meshes(jt_stream.data):
         piece_id = piece_data.get("piece", 0)
-        if piece_id not in piece_meshes:
-            piece_meshes[piece_id] = list(
-                enumerate(piece_data.get("meshes", [])))
+        meshes = piece_data.get("meshes") or []
+        if meshes and piece_id not in piece_meshes:
+            piece_meshes[piece_id] = list(enumerate(meshes))
+    if piece_meshes:
+        selected = set(piece_meshes)
+        selected_bounds = []
+        for meshes in piece_meshes.values():
+            for _index, mesh in meshes:
+                points = mesh.get("pts") or ()
+                if points:
+                    selected_bounds.append(
+                        tuple(min(point[axis] for point in points)
+                              for axis in range(3))
+                        + tuple(max(point[axis] for point in points)
+                                for axis in range(3)))
+        def keep(info):
+            if info["piece"] in selected:
+                return True
+            if not is_axis_aligned_box(info["mesh"]):
+                return True
+            return not (
+                len(selected_bounds) == 1
+                and _bounds_occludes(info.get("bounds"), selected_bounds[0])
+            )
+
+        infos = [info for info in infos if keep(info)]
+        if not infos:
+            return None
 
     assignments = assign_piece_tags(infos, blocks, body_records)
     single_body_palette = None

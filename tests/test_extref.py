@@ -48,6 +48,31 @@ def extref_stream(names, records):
     return header + bytes(directory) + b"".join(records) + table
 
 
+def counted_entry(text):
+    raw = text.encode("utf-8")
+    return struct.pack("<H", len(raw)) + raw
+
+
+def counted_extref_stream(names, records):
+    """An OLE/CFBF counted table with zero-length separators and a footer."""
+    header_len = 25
+    directory_len = 8 * len(records) + 4
+    position = header_len + directory_len
+    directory = bytearray()
+    for record_id, record in enumerate(records, start=1):
+        directory += struct.pack("<II", record_id, position)
+        position += len(record)
+    directory += struct.pack("<I", 0)
+    table = (b"\x01\x01\x00\x00\x00\x00\x01\x01"
+             + struct.pack("<I", len(names))
+             + b"".join(counted_entry(name) for name in names))
+    total = position + len(table)
+    payload_size = total - 16
+    header = (b"EXTREFSTREAM" + struct.pack("<I", 3)
+              + struct.pack("<I", payload_size) + b"\x02\x05\x00\x00" + b"\x00")
+    return header + bytes(directory) + b"".join(records) + table
+
+
 class ExtrefParsingTests(unittest.TestCase):
     def test_valid_record_slots_handles_and_closing_duplicate(self):
         tail = b"\xe0" + struct.pack(">I", 9) + struct.pack(">I", 0xC0000005)
@@ -104,6 +129,32 @@ class ExtrefParsingTests(unittest.TestCase):
             self.assertEqual(parsed["records"][0]["kind"], "empty")
             self.assertEqual(parsed["records"][0]["closing_marker"],
                              closing)
+
+    def test_ole_counted_table_with_empty_separator_and_footer(self):
+        payload = counted_extref_stream(
+            ["self.prt", "child.prt", "R", "E:\\children", "RM", "", "ES"],
+            [handle_record([1, 2, 3, 4], [7])])
+        parsed = extref.parse_extref(payload)
+        self.assertIsNotNone(parsed)
+        self.assertEqual([item["text"] for item in parsed["strings"]],
+                         ["self.prt", "child.prt", "R", "E:\\children",
+                          "RM", "", "ES"])
+        streams = {"EXTREF": payload}
+        self.assertEqual(extref_references.reference_names(streams),
+                         ["self.prt", "child.prt"])
+        self.assertEqual(extref_references.search_roots(streams),
+                         ["E:\\children"])
+        entry = extref_references.reference_entries(streams)[1]
+        self.assertEqual(entry["directory"], "E:\\children")
+        self.assertEqual(entry["load_mode"], "RM")
+
+    def test_partial_counted_table_fails_closed(self):
+        good = counted_extref_stream(
+            ["self.prt", "child.prt", "R", "E:\\children", "RM", "", "ES"],
+            [handle_record([1, 2, 3, 4], [7])])
+        self.assertIsNone(extref.parse_extref(good[:-1]))
+        truncated = good[:-4] + struct.pack("<H", 99) + b"ES"
+        self.assertIsNone(extref.parse_extref(truncated))
 
     def test_reference_entries_and_roots(self):
         payload = extref_stream(

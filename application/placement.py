@@ -27,6 +27,27 @@ import s19_route_a
 import row_state
 import suppress_state
 
+
+def _component_names(data: bytes, roster: dict | None) -> list[str]:
+    """Stems a frame child name may legitimately refer to.
+
+    Combines the FastLoad roster prototypes with the part's exact EXTREF
+    entries, so a stray property string (for example ``" inherited"``)
+    never becomes a component family.
+
+    > example
+    > _component_names(part_bytes, {"prototypes": [{"name": "GEAR"}]})
+      -> ["GEAR", ...exact EXTREF names...]
+    """
+    names = [str(prototype.get("name") or "")
+             for prototype in (roster or {}).get("prototypes") or ()]
+    try:
+        streams = prt_jt.open_prt_bytes(data)
+        names.extend(extref_references.reference_names(streams))
+    except Exception:
+        pass
+    return [name for name in names if name]
+
 from .geometry import child_extent_mm
 from .serialization import object_model_payload
 
@@ -109,7 +130,9 @@ def placement_families(data: bytes, roster: dict | None = None):
         scoped = assembly_pairing.structured_frames(
             records, frames,
             expected_count=expected if expected > 1 else None)
-        families = assembly_pairing.cluster_families(payload, scoped)
+        valid_names = _component_names(data, roster)
+        families = assembly_pairing.cluster_families(
+            payload, scoped, valid_names=valid_names or None)
         validated = bool(expected > 1 and len(scoped) == expected)
         prototype_indices = {
             occurrence.get("prototype_index")
@@ -302,8 +325,8 @@ def placement_bundle(stems: list[str], collections: dict[str, list[dict]],
 
     assigned = set(assignments.values())
     if not assignments:
-        notes.append("no child assignment; skipped all unplaced children")
-        return [], notes
+        notes.append("no child assignment; no placement matrices emitted")
+        return None, notes
     for stem in sorted(set(stems) - assigned):
         child_collection = collections.get(stem) or []
         if not child_collection:
@@ -314,7 +337,7 @@ def placement_bundle(stems: list[str], collections: dict[str, list[dict]],
         collection.extend(dict(entry) for entry in child_collection)
         notes.append("%s: no feasible child; rendered unplaced" % stem)
     if not collection:
-        notes.append("component pairing stayed ambiguous; rendered without "
-                     "per-instance placement; child geometry omitted")
-        return [], notes
+        notes.append("component pairing stayed ambiguous; no per-instance "
+                     "placement matrices emitted")
+        return None, notes
     return collection, notes

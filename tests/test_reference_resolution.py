@@ -89,6 +89,25 @@ class ReferenceResolutionTests(unittest.TestCase):
         self.assertEqual(meaningful_part_references(blob, "root.prt"),
                          ["framed_child.prt"])
 
+    def test_staging_preserves_child_listed_as_external_reference(self):
+        extref_payload = extref_stream(
+            ["root.prt", "child.prt", "O", "D:\\exact", "RM"],
+            [handle_record([0, 1, 2, 3], [7])])
+        blob = splm_container({
+            "/Root/UG_PART/ExternalReferences": extref_payload,
+            "/Root/FastLoad/ExternalReferences": b"child.prt",
+        })
+        with tempfile.TemporaryDirectory() as source, \
+                tempfile.TemporaryDirectory() as target:
+            Path(source, "child.prt").write_bytes(b"child bytes")
+            copied = copy_referenced_parts(
+                blob, target, "root.prt", source_dir=source)
+            self.assertTrue(any(
+                Path(path).name.casefold() == "child.prt"
+                for path in copied))
+            self.assertEqual(
+                Path(target, "child.prt").read_bytes(), b"child bytes")
+
     def test_generic_templates_and_self_are_still_filtered(self):
         extref_payload = extref_stream(
             ["root.prt", "O", "D:\\exact", "RM", "model_template_nx10.prt"],

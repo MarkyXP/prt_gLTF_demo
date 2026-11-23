@@ -145,6 +145,17 @@ class ReadPartInfoTests(unittest.TestCase):
         self.assertEqual(info["preview"]["width"], 247)
         self.assertEqual(info["arrangements"][0]["default"], True)
 
+    def test_drawing_sheet_preview_fallback_is_deterministic(self):
+        container = splm_container({
+            "/Root/images/drawings/SHT2/preview": jpeg_bytes(10, 20),
+            "/Root/images/drawings/SHT1/preview": jpeg_bytes(247, 185),
+            "/Root/part/attrs": ATTRIBUTES_XML,
+        })
+        info = read_part_info(container)
+        self.assertEqual(info["preview"]["width"], 247)
+        self.assertEqual(info["preview"]["height"], 185)
+        self.assertEqual(info["preview_source"], "drawing-sheet")
+
     def test_units_only_when_explicit(self):
         attrs = (b'<UgAttributes><Attribute title="Units" value="mm"/>'
                  b'</UgAttributes>')

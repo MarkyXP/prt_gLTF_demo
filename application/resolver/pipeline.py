@@ -31,6 +31,7 @@ from .accounting import (
     ReferenceCallback,
 )
 from .display import (
+    drop_disjoint_body_pieces,
     drop_unassociated_envelope_boxes,
     drop_undisplayed_bodies,
     has_visible_body_evidence,
@@ -38,7 +39,6 @@ from .display import (
 )
 from ..geometry import is_proxy_collection, mark_proxy, mesh_collection
 from ..placement import (
-    ambiguous_child_placement,
     assembly_structure,
     placement_bundle,
     placement_families,
@@ -53,7 +53,8 @@ from ..suppression import (
     is_suppressed_child,
     suppressed_child_names,
 )
-from .status import append_assembly, record_rmfastload
+from .geometry_status import mark_drawings_only
+from .status import append_assembly, record_rmfastload, warn_unplaced
 
 
 LOGGER = logging.getLogger(__name__)
@@ -227,6 +228,8 @@ def _convert_part_path(path: str | Path, seen: set[str],
         str(path), jt_collection)
     jt_collection, dropped_envelopes = drop_unassociated_envelope_boxes(
         str(path), jt_collection)
+    jt_collection, dropped_disjoint = drop_disjoint_body_pieces(
+        str(path), jt_collection)
     if dropped_undisplayed:
         count_skip(context, "dropped_undisplayed", dropped_undisplayed)
         LOGGER.info(
@@ -236,6 +239,10 @@ def _convert_part_path(path: str | Path, seen: set[str],
         LOGGER.info(
             "part=%s step=jt result=dropped-unassociated-envelope meshes=%d",
             logical_name, dropped_envelopes)
+    if dropped_disjoint:
+        LOGGER.info(
+            "part=%s step=jt result=dropped-disjoint-body meshes=%d",
+            logical_name, dropped_disjoint)
     jt_collection, dropped_transparent = paint_body_display(
         str(path), jt_collection, palette_order=jt_palette_order)
     remember_component(jt_collection, logical_name)
@@ -282,6 +289,8 @@ def _convert_part_path(path: str | Path, seen: set[str],
         if collection:
             return finish(collection)
         if primary is not None:
+            if mark_drawings_only(resolution, data, logical_name):
+                return finish([])
             raise primary
         return finish([])
 
@@ -309,11 +318,6 @@ def _convert_part_path(path: str | Path, seen: set[str],
         == expected_occurrences)
     resolved_meshes = {}
     resolved_paths = {}
-    ambiguous_children = ambiguous_child_placement(
-        families,
-        roster=(structure or {}).get("roster"),
-        extref_names=(structure or {}).get("extref_names"),
-        stems=ref_names)
 
     def resolve_child(ref_name: str, reference: Path):
         child_resolution = {"assemblies": []}
@@ -332,14 +336,6 @@ def _convert_part_path(path: str | Path, seen: set[str],
     candidates = []
     for ref_name in ref_names:
         child_started = time.perf_counter()
-        if ambiguous_children:
-            skipped_hidden.append(ref_name)
-            count_skip(context, "skipped_hidden")
-            LOGGER.info(
-                "part=%s step=child name=%s result=ambiguous-placement-skip "
-                "total=%.3fs",
-                logical_name, ref_name, time.perf_counter() - started)
-            continue
         if is_suppressed_child(ref_name, suppressed) or \
                 is_external_reference_child(
                     ref_name, external_names, direct_jt,
@@ -446,6 +442,10 @@ def _convert_part_path(path: str | Path, seen: set[str],
             missing_names, nested_missing, skipped_hidden,
             "placed-instances", pair_notes)
         return finish(bundle, includes_children=True)
+
+    if bundle is None and resolved_meshes:
+        warn_unplaced(context, resolution, pair_notes, logical_name,
+                      len(resolved_meshes))
 
     incomplete = bool(missing_names or nested_missing)
     if defer_parasolid and (incomplete or not referenced):

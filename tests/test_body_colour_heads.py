@@ -37,10 +37,31 @@ class NewBodyHeadTests(unittest.TestCase):
             [(site.token, site.kind) for site in colour_sites(payload)],
             [(11, "body")])
 
-    def test_legacy_4_byte_descriptor_stays_rejected(self):
+    def test_head_43_84_is_a_body_colour_site(self):
+        payload = body_row(b"\xc0\x43\x84\x00", b"\x80\x82", b"\x02\x0a")
+        self.assertEqual(
+            [(site.token, site.kind) for site in colour_sites(payload)],
+            [(130, "body")])
+
+    def test_unprefixed_wide_tag_on_40_head_is_rejected(self):
         payload = body_row(
-            b"\xc0\x40\x84\x00", b"\x10", b"\x81\x0f\x84\x9f")
+            b"\xc0\x40\x84\x00", b"\x80\xab", b"\x80\xf2\x84\xb5")
         self.assertEqual(colour_sites(payload), [])
+
+    def test_head_46_04_is_a_body_colour_site(self):
+        payload = body_row(b"\xc0\x46\x04\x00", b"\x10", b"\x02\x1d")
+        self.assertEqual(
+            [(site.token, site.kind) for site in colour_sites(payload)],
+            [(15, "body")])
+
+    def test_multi_token_descriptor_is_a_body_site(self):
+        payload = body_row(
+            b"\xc0\x46\x04\x00", b"\x10", b"\x07\x1d")
+        self.assertEqual(
+            [(site.token, site.kind) for site in colour_sites(payload)],
+            [(15, "body")])
+        self.assertEqual(
+            _body_tag(b"\x80\xf2\x80\x9e\x01\x93\x8e", 0), 158)
 
 
 class BodyTagDescriptorTests(unittest.TestCase):

@@ -134,11 +134,68 @@ def _parse_at(payload, start):
     }
 
 
-def parse_prototype_first(payload):
+def _stem_key(value):
+    """Case-insensitive part stem with any path and ``.prt`` suffix removed.
+
+    > example
+    >>> _stem_key("C:/parts/WIDGET.PRT")
+    'widget'
+    """
+    text = str(value).replace("\\", "/").rsplit("/", 1)[-1]
+    if text.casefold().endswith(".prt"):
+        text = text[:-4]
+    return text.casefold()
+
+
+def _joins_known(parsed, known_stems):
+    """Whether any prototype name joins an exact ``.prt`` stem.
+
+    > example
+    >>> _joins_known({"prototypes": ["GEAR"]}, ["gear.prt"])
+    True
+    """
+    stems = {_stem_key(stem) for stem in known_stems if stem}
+    return any(_stem_key(name) in stems for name in parsed["prototypes"])
+
+
+def _parse_anchorless(payload, known_stems):
+    """The unique anchor-less prototype-first block joining known stems.
+
+    Writers saved without the ``ff ff ff ff 01`` anchor still serialize the
+    same grammar. A candidate is accepted only when the payload carries a
+    ``MODEL`` frame, its occurrence indices are in range, and at least one
+    prototype name joins an exact EXTREF stem. Overlapping or multiple
+    candidates stay ambiguous and are rejected rather than guessed.
+
+    > example
+    >>> payload = synthetic_payload(["GEAR"], [1])[12:]
+    >>> _parse_anchorless(
+    ...     payload.replace(b"\\xff\\xff\\xff\\xff", b""),
+    ...     ["gear.prt"])["prototypes"]
+    ['GEAR']
+    """
+    candidates = []
+    for position in range(len(payload) - 1):
+        if payload[position] != 1:
+            continue
+        if _count(payload[position + 1]) is None:
+            continue
+        parsed = _parse_at(payload, position)
+        if parsed is None or not _joins_known(parsed, known_stems):
+            continue
+        candidates.append((position, parsed))
+    if len(candidates) != 1:
+        return None
+    return candidates[0][1]
+
+
+def parse_prototype_first(payload, known_stems=None):
     """Return a roster in the canonical shape, or ``None`` without one.
 
     ``None`` means the payload does not carry a MODEL-anchored prototype-first
-    roster; callers keep their previous reference policy.
+    roster; callers keep their previous reference policy. The anchored form is
+    always tried first. The anchor-less form is only accepted when
+    ``known_stems`` joins at least one prototype and the candidate is unique.
 
     > example
     >>> parse_prototype_first(b"not a roster") is None
@@ -152,7 +209,12 @@ def parse_prototype_first(payload):
         if parsed is not None:
             return _build(parsed)
         start = payload.find(ANCHOR, start + 1)
-    return None
+    if not known_stems:
+        return None
+    parsed = _parse_anchorless(payload, known_stems)
+    if parsed is None:
+        return None
+    return _build(parsed)
 
 
 def _build(parsed):

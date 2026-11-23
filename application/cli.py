@@ -65,7 +65,9 @@ def _render_model_path(source_path: Path):
         return
     print("converting %s to GLB..." % source_path.name)
     initialize_reference_index(_config.BASE_DIR)
-    glb_bytes, stats = convert_to_glb(source_path.read_bytes(), source_path.name)
+    glb_bytes, stats = convert_to_glb(
+        source_path.read_bytes(), source_path.name,
+        source_dir=source_path.parent)
     with tempfile.TemporaryDirectory() as temp_dir:
         model_path = Path(temp_dir) / "model.glb"
         model_path.write_bytes(glb_bytes)
@@ -224,6 +226,11 @@ def _cmd_render(argv: list[str]) -> int:
                 print("using %s directly (skipping .prt conversion)" % source_path.name)
             else:
                 print("meshes=%d pts=%d tris=%d" % (stats["meshes"], stats["points"], stats["triangles"]))
+                result = stats.get("result") or {}
+                if result.get("status") == "drawings-only":
+                    print("drawings-only part: no 3D geometry to render; "
+                          "use `app.py info` for the sheet preview")
+                    return 0
 
             print("rendering to %s (%dx%d)..." % (output_png, args.width, args.height))
             _render_with_playwright(model_path, output_png, camera, args.width, args.height, _config.BASE_DIR)

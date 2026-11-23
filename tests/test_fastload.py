@@ -54,16 +54,20 @@ class FastloadRosterTests(unittest.TestCase):
             ["gear"], [1], b"9"))
         entry[11] += 1
         self.assertEqual(fastload.parse_roster(bytes(entry))["prototypes"], [])
-        unknown_lane = fastload.synthetic_structure(
-            ["gear"], [1], b"9", lane_form=2)
-        self.assertEqual(
-            fastload.parse_roster(unknown_lane)["prototypes"], [])
+        # An unknown lane or marker rejects the anchored candidate, but the
+        # prototype-first fallback still sees the intact sub-grammar and is
+        # authoritative (F5: always retry prototype-first).
+        for entry in (
+                fastload.synthetic_structure(["gear"], [1], b"9",
+                                             lane_form=2),
+                fastload.synthetic_structure(["gear"], [1], b"0")):
+            self.assertEqual(
+                [item["name"] for item in
+                 fastload.parse_roster(entry)["prototypes"]],
+                ["gear"])
         out_of_range = fastload.synthetic_structure(["gear"], [2], b"9")
         self.assertEqual(
             fastload.parse_roster(out_of_range)["prototypes"], [])
-        bad_marker = fastload.synthetic_structure(["gear"], [1], b"0")
-        self.assertEqual(
-            fastload.parse_roster(bad_marker)["prototypes"], [])
 
     def test_prototype_first_layout_is_parsed_when_model_anchored(self):
         entry = fastload_prototype.synthetic_payload(
@@ -82,6 +86,29 @@ class FastloadRosterTests(unittest.TestCase):
         entry = fastload_prototype.synthetic_payload(["NUT"], [1])
         pay = entry.replace(fastload_prototype.MODEL_FRAME, b"")
         self.assertEqual(fastload.parse_roster(pay)["prototypes"], [])
+
+    def test_anchorless_prototype_first_requires_exact_stem_join(self):
+        entry = fastload_prototype.synthetic_payload(
+            ["GEAR", "ROD"], [1, 1, 2], identities=("dev.1",))
+        entry = entry.replace(fastload_prototype.ANCHOR, b"\x00\x00\x00\x00\x01")
+        roster = fastload.parse_roster(entry, known_stems=["gear.prt"])
+        self.assertEqual([item["name"] for item in roster["prototypes"]],
+                         ["GEAR", "ROD"])
+        self.assertEqual(
+            [item["prototype_index"] for item in roster["occurrences"]],
+            [1, 1, 2])
+        self.assertEqual(
+            fastload.parse_roster(entry, known_stems=["other.prt"])["prototypes"],
+            [])
+        self.assertEqual(fastload.parse_roster(entry)["prototypes"], [])
+
+    def test_anchorless_prototype_first_rejects_bad_index_sequence(self):
+        entry = fastload_prototype.synthetic_payload(
+            ["GEAR"], [2], identities=("dev.1",))
+        entry = entry.replace(fastload_prototype.ANCHOR, b"\x00\x00\x00\x00\x01")
+        self.assertEqual(
+            fastload.parse_roster(entry, known_stems=["gear.prt"])["prototypes"],
+            [])
 
     def test_roster_from_streams_requires_one_structure_entry(self):
         entry = fastload.synthetic_structure(["gear"], [1], b"9")

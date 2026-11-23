@@ -23,7 +23,8 @@ ArtifactCallback = Callable[[str, str, list[dict]], None]
 ReferenceCallback = Callable[[str, list[str]], None]
 
 SKIP_STAT_KEYS = ("skipped_hidden", "dropped_translucent",
-                  "dropped_undisplayed", "dropped_suppressed_features")
+                  "dropped_undisplayed", "dropped_suppressed_features",
+                  "unplaced_components")
 
 
 class ConversionContext:

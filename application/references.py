@@ -160,27 +160,32 @@ def reference_tree(name: str, data: bytes, roots: list[str],
 
 
 def copy_referenced_parts(data: bytes, target_dir: str | os.PathLike,
-                          source_name: str) -> list[str]:
+                          source_name: str,
+                          source_dir: str | os.PathLike | None = None
+                          ) -> list[str]:
     """Copy locally resolvable references beside an uploaded root file.
 
     Suppressed children are skipped before their file is read: the parent
     flags them invisible, so no conversion or reference copy happens for them.
+    Every resolvable meaningful name is staged; a name that merely overlaps a
+    legacy ``ExternalReferences`` scan is still a real component occurrence,
+    and staging an extra file is harmless because resolution uses it only
+    when the parent actually names it. ``source_dir`` keeps the CLI/render
+    path resolving sibling children exactly as a direct conversion does.
 
     > example
     > copy_referenced_parts(part_bytes, "C:/staged", "car.prt")
       -> the locally resolved source paths copied into C:/staged
     """
     copied = []
-    roots = reference_roots(data)
+    roots = reference_roots(data, source_dir)
     ref_names = meaningful_part_references(data, source_name)
     suppressed = (
         frozenset(suppressed_child_names(data))
         | early_hidden_child_names(data, ref_names)
     )
-    external_names = external_reference_names(data)
     for name in ref_names:
-        if (is_suppressed_child(name, suppressed)
-                or reference_basename(name).casefold() in external_names):
+        if is_suppressed_child(name, suppressed):
             continue
         path = find_named_part(
             name, roots, parent_path=Path(target_dir) / "part.prt")

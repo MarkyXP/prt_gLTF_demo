@@ -50,6 +50,8 @@ LEGACY_BODY_HEADS = (
     bytes([0xC0, 0x46, 0x04, 0x04]),
     bytes([0xC0, 0x40, 0x04, 0x00]),
     bytes([0xC0, 0x43, 0x04, 0x00]),
+    bytes([0xC0, 0x43, 0x84, 0x00]),
+    bytes([0xC0, 0x46, 0x04, 0x00]),
 )
 HEADS = (HEAD,) + LEGACY_BODY_HEADS
 BOUNDS_HEADS = (bytes([0xF0, 0x01, 0x01, 0x07]),
@@ -95,14 +97,21 @@ def _legacy_body_token(payload, head_offset):
     if token is None:
         return None
     body = head_offset + 4 + token[1]
-    if payload[body:body + 1] != b"\x02":
-        return None
-    tag = _decode_token(payload, body + 1)
-    if tag is None:
-        return None
-    if payload[body + 1 + tag[1]:body + 4 + tag[1]] != BODY_TAIL:
-        return None
-    return token[0]
+    head = payload[head_offset:head_offset + 4]
+    if payload[body:body + 1] == b"\x02":
+        return token[0] if _body_tag(payload, body) is not None else None
+    if head == bytes([0xC0, 0x46, 0x04, 0x00]):
+        layer, width = _decode_tag_token(payload, body)
+        if layer is None or not 0 <= layer <= 255:
+            return None
+        tag, tag_width = _decode_tag_token(payload, body + width)
+        if tag is None or not 0 <= tag <= 1023:
+            return None
+        tail = body + width + tag_width
+        if payload[tail:tail + len(BODY_TAIL)] != BODY_TAIL:
+            return None
+        return token[0]
+    return None
 
 
 def _decode_tag_token(data, at):
@@ -456,6 +465,35 @@ def body_translucency(part_path):
     if not percents:
         return 0
     return max(percents)
+
+
+def body_translucency_records(part_path):
+    """[(candidate bounds, translucent percent)] per body colour row.
+
+    The load-authoritative A-site may sit before any one body row, so each
+    row gets its own short-before window. ``percent`` is 0 when no site is
+    found. Missing bounds are kept as ``None`` so callers can fall back.
+
+    > example
+    > body_translucency_records("two_bodies.prt")
+    > -> [((...), 0), ((...), 50)]
+    """
+    payload = find_ug_part(part_path)
+    if payload is None:
+        return []
+    bodies = [site for site in colour_sites(payload) if site.kind == "body"]
+    sites = translucency_sites(payload)
+    records = []
+    for site in bodies:
+        percents = [
+            percent for off, percent in sites
+            if 0 < site.offset - off <= 200
+        ]
+        records.append((
+            _bounds_before(payload, site.offset),
+            max(percents) if percents else 0,
+        ))
+    return records
 
 
 def main(argv=None):

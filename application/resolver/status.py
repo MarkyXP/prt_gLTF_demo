@@ -13,7 +13,26 @@ import logging
 
 import rmfastload
 
+from .accounting import count_skip
+
 LOGGER = logging.getLogger(__name__)
+
+
+def warn_unplaced(context, resolution: dict, pair_notes: list[str],
+                  logical_name: str, count: int) -> None:
+    """Count and annotate decoded children emitted without placement.
+
+    > example
+    > warn_unplaced(context, {}, [], "assy.prt", 3) -> None
+    """
+    if count <= 0:
+        return
+    count_skip(context, "unplaced_components", count)
+    pair_notes.append(
+        "%d decoded child part(s) emitted unplaced: no per-instance "
+        "placement matrices (origin overlap possible)" % count)
+    LOGGER.warning("part=%s step=placement result=unplaced components=%d",
+                   logical_name, count)
 
 
 def record_rmfastload(resolution: dict, logical_name: str, path,

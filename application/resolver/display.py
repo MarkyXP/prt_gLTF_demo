@@ -350,6 +350,58 @@ def drop_unassociated_envelope_boxes(
     return kept, len(collection) - len(kept)
 
 
+def drop_disjoint_body_pieces(
+    path: str, collection: list[dict]
+) -> tuple[list[dict], int]:
+    """Drop JT pieces whose bounds lie outside every decoded body bound.
+
+    Only runs when every body colour row has valid bounds and every piece has
+    valid bounds, so partial or legacy metadata fails open. Pieces that
+    intersect any body envelope are kept; this removes stray fragments that
+    are not bound to an NX body without dropping unrecorded sub-features.
+    """
+    try:
+        from color_index import body_palette_bounds_records
+        records = body_palette_bounds_records(str(path))
+    except Exception:
+        LOGGER.debug("Failed to read body bounds for %s", path, exc_info=True)
+        return collection, 0
+    body_bounds = [bounds for _index, _rgb, bounds in records]
+    if not body_bounds or any(
+            bounds is None or not all(math.isfinite(value) for value in bounds)
+            or any(bounds[axis] > bounds[axis + 3] for axis in range(3))
+            for bounds in body_bounds):
+        return collection, 0
+    pieces = _piece_bounds(collection)
+    if pieces is None:
+        return collection, 0
+    piece_keys = {(entry.get("stream"), entry.get("jtPiece"))
+                  for entry in collection}
+    if len(pieces) != len(piece_keys):
+        return collection, 0
+
+    def intersects(bounds, body):
+        return not (
+            bounds[3] < body[0] - 1e-6 or bounds[0] > body[3] + 1e-6
+            or bounds[4] < body[1] - 1e-6 or bounds[1] > body[4] + 1e-6
+            or bounds[5] < body[2] - 1e-6 or bounds[2] > body[5] + 1e-6)
+
+    if any(not any(intersects(bounds, body) for bounds in pieces.values())
+           for body in body_bounds):
+        return collection, 0
+    hit = {
+        key for key, bounds in pieces.items()
+        if any(intersects(bounds, body) for body in body_bounds)
+    }
+    if len(hit) / len(pieces) < 0.75:
+        return collection, 0
+    kept = [
+        entry for entry in collection
+        if (entry.get("stream"), entry.get("jtPiece")) in hit
+    ]
+    return kept, len(collection) - len(kept)
+
+
 def _match_envelope_bodies(collection: list[dict], records: list[tuple],
                            record_indexes: list[int],
                            taken_keys: set[tuple]) -> set[tuple]:
@@ -453,10 +505,19 @@ def paint_body_display(
       display records decode
     """
     try:
-        from color_index import body_palette_bounds_records, body_translucency
+        from color_index import (
+            body_palette_bounds_records,
+            body_translucency,
+            body_translucency_records,
+        )
         percent = body_translucency(str(path)) or 0
         if percent is None:
             percent = 0
+        try:
+            translucencies = body_translucency_records(str(path))
+        except Exception:
+            LOGGER.debug("No per-body translucency for %s", path, exc_info=True)
+            translucencies = []
         records = [
             (index, list(rgb[:3]), bounds)
             if rgb and isinstance(rgb, (tuple, list)) and len(rgb) >= 3
@@ -518,14 +579,37 @@ def paint_body_display(
                 )
             if rgb and _is_neutral_jt_colour(entry.get("color")):
                 entry["color"] = list(rgb)
-        if percent >= 100:
-            return [], len(collection)
-        if percent:
-            alpha = max(0.01, 1.0 - percent / 100.0)
-            for entry in collection:
-                if isinstance(entry.get("color"), list) and len(entry["color"]) == 3:
+        kept = []
+        dropped = 0
+        for current_position, entry in enumerate(collection):
+            if matches is not None:
+                index = matches.get((entry["stream"], entry["jtPiece"]))
+            elif per_entry:
+                index = (
+                    palette_positions.get(id(entry))
+                    if palette_order is not None
+                    else current_position
+                )
+            elif records:
+                index = 0
+            else:
+                index = None
+            if index is not None and 0 <= index < len(translucencies):
+                entry_percent = translucencies[index][1]
+            elif translucencies and len(translucencies) == 1:
+                entry_percent = translucencies[0][1]
+            else:
+                entry_percent = percent
+            if entry_percent >= 100:
+                dropped += 1
+                continue
+            if entry_percent:
+                alpha = max(0.01, 1.0 - entry_percent / 100.0)
+                if (isinstance(entry.get("color"), list)
+                        and len(entry["color"]) == 3):
                     entry["color"] = entry["color"] + [round(alpha, 6)]
+            kept.append(entry)
     except Exception:
         LOGGER.exception("Failed to apply body display for %s", path)
         return collection, 0
-    return collection, 0
+    return kept, dropped

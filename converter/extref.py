@@ -26,6 +26,7 @@ VERSION = 3
 HEADER_LEN = 24
 DIRECTORY_START = 25
 HANDLE_PREFIX_LEN = 25
+COUNTED_PREFIX = b"\x01\x01\x00\x00\x00\x00\x01\x01"
 
 
 def _u16le(data, offset):
@@ -169,6 +170,76 @@ def _locate_string_table(data):
     return None
 
 
+def _read_counted_entry(data, offset, total):
+    """One counted u16 entry, including the zero-length separator form.
+
+    > example
+    >>> _read_counted_entry(b"\\x03\\x00abc", 0, 5)
+    ('abc', 5)
+    >>> _read_counted_entry(b"\\x00\\x00", 0, 2)
+    ('', 2)
+    """
+    if offset + 2 > total:
+        return None
+    length = _u16le(data, offset)
+    start = offset + 2
+    end = start + length
+    if end > total:
+        return None
+    if length == 0:
+        return "", end
+    try:
+        text = data[start:end].decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        return None
+    return text, end
+
+
+def _locate_counted_table(data):
+    """Locate the OLE counted table form, allowing empty separator entries.
+
+    The OLE/CFBF writer precedes ``<u32 count>`` with the eight-byte prefix
+    ``01 01 00 00 00 00 01 01`` and then stores ``count`` u16-length entries
+    that include zero-length separators, codes, directories, and a footer.
+    The table must consume exactly to the payload end; a partially parsed
+    table rejects the whole stream.
+
+    > example
+    >>> blob = (b"x" * 25 + COUNTED_PREFIX + b"\\x01\\x00\\x00\\x00"
+    ...         + b"\\x00\\x00")
+    >>> _locate_counted_table(blob)[1][0]["text"]
+    ''
+    """
+    total = len(data)
+    prefix_len = len(COUNTED_PREFIX)
+    if total < prefix_len + 5:
+        return None
+    for start in range(total - prefix_len - 5, DIRECTORY_START - 1, -1):
+        if data[start:start + prefix_len] != COUNTED_PREFIX:
+            continue
+        count = _u32le(data, start + prefix_len)
+        if count == 0:
+            continue
+        marker = start + prefix_len - 1
+        position = start + prefix_len + 4
+        strings = []
+        for ordinal in range(count):
+            entry = _read_counted_entry(data, position, total)
+            if entry is None:
+                strings = []
+                break
+            text, position = entry
+            strings.append({"ordinal": ordinal,
+                            "offset": position - 2
+                            - len(text.encode("utf-8")),
+                            "text": text})
+        if len(strings) == count and position == total:
+            return marker, strings
+    return None
+
+
 def _parse_tail(data, start, record_offset):
     """Adjacent ``e0 handle:u32 BE tagged:u32 BE`` pairs in the tail.
 
@@ -275,6 +346,8 @@ def parse_extref(data):
     if payload_size == 0 or 16 + payload_size > len(data):
         return None
     table = _locate_string_table(data)
+    if table is None:
+        table = _locate_counted_table(data)
     if table is None:
         return None
     table_offset, strings = table
