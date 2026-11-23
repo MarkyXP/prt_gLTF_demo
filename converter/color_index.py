@@ -5,8 +5,8 @@ as a fixed record whose header is byte-identical across the families
 checked:
 
     record opener   47 01 04 01
-    colour header   c0 44 04 00  (current) / c0 44 84 00, c0 40 84 00,
-                    c0 46 04 04, c0 40 04 00, c0 43 04 00
+    colour header   c0 44 04 00  (current) / c0 44 84 00, c0 42 84 00,
+                    c0 40 84 00, c0 46 04 04, c0 40 04 00, c0 43 04 00
                     (legacy body-row family)
     colour token    <OM int token that decodes to palette index + 1>
     row tail        <OM int descriptor tokens> 01 93 8e
@@ -46,6 +46,7 @@ ColourSite = namedtuple("ColourSite", "offset opener token kind")
 HEAD = bytes([0xC0, 0x44, 0x04, 0x00])
 LEGACY_BODY_HEADS = (
     bytes([0xC0, 0x44, 0x84, 0x00]),
+    bytes([0xC0, 0x42, 0x84, 0x00]),
     bytes([0xC0, 0x40, 0x84, 0x00]),
     bytes([0xC0, 0x46, 0x04, 0x04]),
     bytes([0xC0, 0x40, 0x04, 0x00]),
@@ -182,10 +183,11 @@ def colour_sites(payload):
 
     Only openers 47 01 04 01 (body) and 47 04 04 01 (sub) count; opens
     with other leading bytes are "other" and skipped. Both the current
-    ``c0 44 04 00`` head and the legacy body heads are scanned; legacy rows
-    must carry a complete ``02 <tag> 01 93 8e`` body tail.  The encoded body
-    bounds preceding the header are used when present, but are not required:
-    older OLE parts write the same body row without them.
+    ``c0 44 04 00`` head and the legacy body heads (including the OLE
+    ``c0 42 84 00`` variant) are scanned; legacy rows must carry a complete
+    ``02 <tag> 01 93 8e`` body tail. The encoded body bounds preceding the
+    header are used when present, but are not required: older OLE parts write
+    the same body row without them.
 
     > example
     >>> colour_sites(b"\\x47\\x01\\x04\\x01\\xc0\\x44\\x04\\x00\\x25")

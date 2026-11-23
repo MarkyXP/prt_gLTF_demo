@@ -43,6 +43,18 @@ class NewBodyHeadTests(unittest.TestCase):
             [(site.token, site.kind) for site in colour_sites(payload)],
             [(130, "body")])
 
+    def test_head_42_84_is_a_body_colour_site(self):
+        payload = body_row(b"\xc0\x42\x84\x00", b"\x68", b"\x02\x0a")
+        self.assertEqual(
+            [(site.token, site.kind) for site in colour_sites(payload)],
+            [(103, "body")])
+
+    def test_head_42_84_on_face_or_sub_opener_is_not_a_body_site(self):
+        head = b"\xc0\x42\x84\x00"
+        face = b"\x47\x03\x04\x01" + head + b"\xc0\x7f\xff\x02\x0a\x06\x93\x8c"
+        sub = b"\x47\x04\x04\x01" + head + b"\x68\x02\x0a\x01\x93\x8e"
+        self.assertEqual(colour_sites(face + sub), [])
+
     def test_unprefixed_wide_tag_on_40_head_is_rejected(self):
         payload = body_row(
             b"\xc0\x40\x84\x00", b"\x80\xab", b"\x80\xf2\x84\xb5")
@@ -111,6 +123,7 @@ class BodyTagBindingTests(unittest.TestCase):
         table = {
             4: (1.0, 0.0, 0.0),
             11: (0.8, 1.0, 0.2),
+            103: (0.0, 0.6, 1.0),
             142: (0.0, 0.4, 0.4),
         }
         with patch("color_index.find_ug_part", return_value=payload), \
@@ -135,6 +148,12 @@ class BodyTagBindingTests(unittest.TestCase):
         records = self._records(payload)
         self.assertEqual(sorted(records), [139])
         self.assertEqual(records[139]["palette"], 142)
+
+    def test_ole_42_84_head_binds_cornflower_palette(self):
+        payload = body_row(b"\xc0\x42\x84\x00", b"\x68", b"\x02\x0a")
+        records = self._records(payload)
+        self.assertEqual(records[10]["palette"], 103)
+        self.assertEqual(records[10]["rgb"], (0.0, 0.6, 1.0))
 
     def test_headless_tail_row_does_not_bind(self):
         payload = b"\x47\x01\x04\x01\xc0\x44\x04\x00\x05\x02\x08"
