@@ -21,7 +21,10 @@ modules through the flat imports `app.py` sets up (`converter/` is on
 | `color_index.py`  | part-colour record reader (NX palette index) + translucent-percent sites; legacy OLE body rows and `f0 06 01 07` mixed-width bounds |
 | `body_display.py` | per-body display-state atom reader (blanked/non-displayed bodies) |
 | `rmfastload/`     | RMFastLoad object-id membership parser, complete-set selector, and diagnostics (see its README) |
-| `palette.py`      | palette row-RGB decoder merged over the factory default table (current sparse rows and the legacy inline `<80 a5> [rgb] 03 <len> <name> 00 <slot>` table) |
+| `palette.py`      | palette row-RGB decoder merged over the factory default table |
+| `palette_structure.py` | forward structural roster parser: opaque 1-4 byte tags, unnamed/trailing rows, layout diagnostics, no tag allowlist |
+| `palette_atoms.py` | colour atom forms (0/1, dyadic one-byte, shifted binary32/64) |
+| `palette_compact.py` | compact `05 <token> <flag> <head> <rgb>` SPLM colour tables |
 | `face_colour.py`  | per-face display-colour rows decoded from `UG_PART` (header model + face-id rank) |
 | `feature_state.py` | conservative NX2412 EXTRUDE state atoms; no feature-name or JT identity join |
 | `nx_default_palette.json` | 216-entry factory colour table fallback |

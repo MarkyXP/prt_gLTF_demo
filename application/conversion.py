@@ -86,6 +86,26 @@ def convert_to_glb(data: bytes, part_name: str | None = None,
             LOGGER.info(
                 "conversion part=%s colour_index=%s(palette/None)",
                 source_name, colour_index)
+        try:
+            from converter.palette import palette_diagnostics, ug_part_payload
+            palette_payload = ug_part_payload(source)
+            if palette_payload is not None:
+                palette_info = palette_diagnostics(palette_payload)
+                if palette_info["undecodable"]:
+                    LOGGER.info(
+                        "conversion part=%s palette layout=%s decoded=%d "
+                        "undecodable=%d resyncs=%d",
+                        source_name, palette_info["layout"],
+                        palette_info["decoded"], palette_info["undecodable"],
+                        palette_info["resyncs"])
+                elif palette_info["reason"] is not None:
+                    LOGGER.debug(
+                        "conversion part=%s palette layout=%s reason=%s",
+                        source_name, palette_info["layout"],
+                        palette_info["reason"])
+        except Exception:
+            LOGGER.debug("conversion part=%s palette diagnostics failed",
+                         source_name, exc_info=True)
         timings["prepare_ms"] = round(
             (time.perf_counter() - step_started) * 1000, 1)
         LOGGER.info(
