@@ -29,26 +29,24 @@ _CONVERTER_DIR = str(Path(__file__).resolve().parent)
 if _CONVERTER_DIR not in sys.path:
     sys.path.insert(0, _CONVERTER_DIR)
 
+import body_bounds  # noqa: E402
 import color_index  # noqa: E402
 
 DISPLAY_ATOM = b"\xf0\x0c"
-BOUNDS_HEAD_OFFSET = 56
 ATOM_WINDOW = 24
 
 
-def has_display_state_atom(payload: bytes, colour_offset: int) -> bool:
+def has_display_state_atom(payload: bytes, bounds_start: int) -> bool:
     """Whether a body record carries the display-state atom before its bounds.
 
-    The encoded bounds start exactly ``BOUNDS_HEAD_OFFSET`` bytes before the
-    body colour head. The state atom, when present, lives in the short body
-    display header immediately before that bounds head; the search window is
-    bounded so unrelated atoms far from the header are ignored.
+    The state atom, when present, lives in the short body display header
+    immediately before the encoded bounds head; the search window is bounded
+    so unrelated atoms far from the header are ignored.
 
     > example
-    > has_display_state_atom(b"\\xf0\\x0c\\x3d\\xf0\\x0b\\x01\\x07" + bounds, 60)
+    > has_display_state_atom(b"\\xf0\\x0c\\x3d\\xf0\\x0b\\x01\\x07" + bounds, 3)
       -> True
     """
-    bounds_start = colour_offset - BOUNDS_HEAD_OFFSET
     if bounds_start <= len(DISPLAY_ATOM):
         return False
     window_start = max(0, bounds_start - ATOM_WINDOW)
@@ -73,11 +71,12 @@ def body_display_records(part_path: str) -> list[tuple[tuple[float, ...], bool]]
     for site in color_index.colour_sites(payload):
         if site.kind != "body":
             continue
-        bounds = color_index._bounds_before(payload, site.offset)
-        if bounds is None:
+        located = body_bounds.bounds_head_before(payload, site.offset)
+        if located is None:
             continue
+        bounds, bounds_start = located
         records.append(
-            (bounds, has_display_state_atom(payload, site.offset)))
+            (bounds, has_display_state_atom(payload, bounds_start)))
     return records
 
 

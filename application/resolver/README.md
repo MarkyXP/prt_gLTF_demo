@@ -27,6 +27,10 @@ Hidden-component policy:
   exact bounds binding, or after a unique containment match when the legacy
   record stores a larger B-rep envelope. Missing or ambiguous evidence keeps
   the geometry.
+* Suppressed linked bodies keep cached JT geometry but no body-display record.
+  When LINKED_BODY suppression is decoded and every body record is anchored to
+  a piece, non-box pieces far from every record are dropped; incomplete
+  evidence keeps them.
 * Fully transparent bodies (translucency percent 100) are dropped entirely;
   bodies between 0 and 100 keep the alpha-floor painting unchanged.
 

@@ -31,6 +31,11 @@ from converter.jt.geometry import is_axis_aligned_box
 
 LOGGER = logging.getLogger(__name__)
 
+LINKED_BODY_ANCHOR_DISTANCE = 0.05
+LINKED_BODY_ANCHOR_IOU = 0.5
+LINKED_BODY_UNCOVERED_DISTANCE = 0.25
+LINKED_BODY_UNCOVERED_IOU = 0.30
+
 
 def _piece_bounds(collection):
     """Map ``(stream, jtPiece)`` keys to their six-value bounds.
@@ -214,6 +219,66 @@ def _linked_history_keys(path, collection, states, matches):
     return keys
 
 
+def _uncovered_linked_body_keys(collection, states, history):
+    """Return non-box pieces left uncovered when linked bodies are suppressed.
+
+    Suppressed linked bodies keep their cached JT geometry but have no
+    body-display record, so their pieces sit far from every displayed body.
+    Measured separation leaves visible pieces within a normalised distance of
+    0.008 and an IoU of 0.968 of a record, while suppressed pieces stay beyond
+    0.47 and below 0.252. The thresholds sit in that gap and any incomplete
+    evidence returns no keys, so the caller keeps the geometry.
+
+    > example
+    > _uncovered_linked_body_keys(collection, states, history)
+      -> {("JT", 3)}
+    """
+    if not history or not any(
+            record.suppression == "suppressed" for record in history):
+        return set()
+    targets = [bounds for bounds, _hidden in states]
+    if not targets or any(
+            bounds is None or not all(math.isfinite(value) for value in bounds)
+            or any(bounds[axis] > bounds[axis + 3] for axis in range(3))
+            for bounds in targets):
+        return set()
+    piece_bounds = _piece_bounds(collection)
+    if not piece_bounds:
+        return set()
+
+    def normalized_distance(bounds, target):
+        diagonal = max(_bounds_diagonal(bounds), 1.0e-9)
+        return math.dist(bounds, target) / diagonal
+
+    for target in targets:
+        anchored = any(
+            normalized_distance(bounds, target) <= LINKED_BODY_ANCHOR_DISTANCE
+            and _box_iou(bounds, target) >= LINKED_BODY_ANCHOR_IOU
+            for bounds in piece_bounds.values())
+        if not anchored:
+            return set()
+
+    entries_by_key = {}
+    for entry in collection:
+        key = (entry.get("stream"), entry.get("jtPiece"))
+        entries_by_key.setdefault(key, []).append(entry)
+    box_keys = {
+        key for key, entries in entries_by_key.items()
+        if all(is_axis_aligned_box(entry.get("t", {})) for entry in entries)
+    }
+    uncovered = set()
+    for key, bounds in piece_bounds.items():
+        if key in box_keys:
+            continue
+        nearest = min(normalized_distance(bounds, target)
+                      for target in targets)
+        overlap = max(_box_iou(bounds, target) for target in targets)
+        if (nearest > LINKED_BODY_UNCOVERED_DISTANCE
+                and overlap < LINKED_BODY_UNCOVERED_IOU):
+            uncovered.add(key)
+    return uncovered
+
+
 def drop_undisplayed_bodies(path: str,
                             collection: list[dict]) -> tuple[list[dict], int]:
     """Remove JT pieces positively bound to non-displayed NX bodies.
@@ -251,6 +316,8 @@ def drop_undisplayed_bodies(path: str,
         key for key, index in exact.items() if index in hidden_indexes
     }
     hidden_keys |= history_keys
+    hidden_keys |= _uncovered_linked_body_keys(
+        collection, states, history)
     if not hidden_indexes:
         try:
             from converter.linked_body_visibility import (

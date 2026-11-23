@@ -4,14 +4,18 @@ Inputs:
   * A ``UG_PART/UG_PART`` object-model payload or a .prt path.
 
 Outputs:
-  * Structured linked-body records with source and body labels.
-  * An explicit ``unknown`` visibility state when the serialized state has
-    not been positively decoded.
+  * Structured linked-body records with source, body label, and the feature's
+    own suppression state.
+  * An explicit ``unknown`` visibility state when the display state has not
+    been positively decoded.
 
-The linked-body records do not carry the final JT piece identity directly,
-and this writer layout does not expose a positively decoded display state in
-the bounded record itself. Consumers must therefore fail open until a
-validated state and geometry identity join is available.
+Each NX2412 ``LINKED_BODY`` record writes its own suppression state as the
+first ``STATE_HEAD`` atom in the record (``0x01`` suppressed, ``0x04``/``0x05``
+unsuppressed). Later atoms belong to embedded-source or trailing payload and
+are never inspected. The suppression state is separate from ``visibility``:
+the legacy visibility join pairs records to pieces by index, which is unsafe
+for the reverse record order this writer uses. Consumers must fail open until
+a validated state and geometry identity join is available.
 """
 from __future__ import annotations
 
@@ -21,6 +25,8 @@ from pathlib import Path
 from typing import Literal
 
 import color_index
+from feature_state import FeatureSuppression, STATE_HEAD, STATE_TRAILER, \
+    STATE_VALUES
 
 
 LINKED_BODY_RECORD = (
@@ -40,6 +46,7 @@ class LinkedBodyRecord:
     body_label: str
     visibility: VISIBILITY_STATES = "unknown"
     visibility_source: str = "unresolved"
+    suppression: FeatureSuppression = "unknown"
 
 
 def linked_body_count_from_payload(payload: bytes | None) -> int:
@@ -94,6 +101,52 @@ def linked_body_sources_from_payload(payload: bytes | None) -> list[str]:
     return sources
 
 
+def _first_atom_suppression(
+    payload: bytes, start: int, end: int
+) -> FeatureSuppression:
+    """Decode only the first bounded ``STATE_HEAD`` atom in one record.
+
+    The record's own state is the first atom; trailing atoms belong to the
+    embedded source or to payload swallowed by the last record. Missing,
+    incomplete, or unrecognised atoms stay ``unknown`` so consumers fail open.
+
+    > example
+    > _first_atom_suppression(STATE_HEAD + b"\\x01\\x01", 0, 10)
+      -> "suppressed"
+    """
+    head = payload.find(STATE_HEAD, start, end)
+    if head < 0:
+        return "unknown"
+    code_at = head + len(STATE_HEAD)
+    if code_at >= end or \
+            payload[code_at + 1:code_at + len(STATE_TRAILER) + 1] != \
+            STATE_TRAILER:
+        return "unknown"
+    return STATE_VALUES.get(payload[code_at], "unknown")
+
+
+def linked_body_suppressions_from_payload(
+    payload: bytes | None,
+) -> list[FeatureSuppression]:
+    """Return each linked-body record's own suppression, in record order.
+
+    > example
+    > linked_body_suppressions_from_payload(
+    ...     LINKED_BODY_RECORD + STATE_HEAD + b"\\x01\\x01")
+      -> ["suppressed"]
+    """
+    if not payload:
+        return []
+    starts = _record_starts(payload)
+    suppressions = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(payload)
+        suppressions.append(
+            _first_atom_suppression(
+                payload, start + len(LINKED_BODY_PREFIX), end))
+    return suppressions
+
+
 def _record_body_label(record: bytes) -> str:
     """Return the first serialized body or block label in a record."""
     match = re.search(
@@ -115,9 +168,9 @@ def linked_body_records_from_payload(
 ) -> list[LinkedBodyRecord]:
     """Decode bounded linked-body records without inventing visibility.
 
-    The current NX layout provides source and body labels but no validated
-    display-state atom in the record. Every returned state is consequently
-    ``unknown`` until another stream supplies a positively joined state.
+    Suppression comes from each record's first state atom. The legacy
+    ``visibility`` field stays ``unknown`` because its index-pairing join is
+    unsafe for this writer's reverse record order.
     """
     if not payload:
         return []
@@ -138,6 +191,8 @@ def linked_body_records_from_payload(
             offset=start,
             source=source,
             body_label=_record_body_label(record),
+            suppression=_first_atom_suppression(
+                payload, start + len(LINKED_BODY_PREFIX), end),
         ))
     return records
 

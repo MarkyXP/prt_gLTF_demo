@@ -37,8 +37,8 @@ CLI:
 from __future__ import annotations
 
 from collections import namedtuple
-import struct
 
+import body_bounds  # noqa: E402
 import prt_jt  # noqa: E402
 
 ColourSite = namedtuple("ColourSite", "offset opener token kind")
@@ -54,10 +54,6 @@ LEGACY_BODY_HEADS = (
     bytes([0xC0, 0x46, 0x04, 0x00]),
 )
 HEADS = (HEAD,) + LEGACY_BODY_HEADS
-BOUNDS_HEADS = (bytes([0xF0, 0x01, 0x01, 0x07]),
-                bytes([0xF0, 0x0B, 0x01, 0x07]),
-                bytes([0xF0, 0x06, 0x01, 0x07]))
-BOUNDS_SEARCH_WINDOW = 80
 BODY_OPENER = bytes([0x47, 0x01, 0x04, 0x01])
 SUB_OPENER = bytes([0x47, 0x04, 0x04, 0x01])
 BODY_TAIL = bytes([0x01, 0x93, 0x8E])
@@ -88,7 +84,9 @@ def _legacy_body_token(payload, head_offset):
     """Palette index of a legacy body row, or None when the row is malformed.
 
     The legacy head family shares the body grammar but may store a wide tag
-    token, so the row tail ``02 <tag token> 01 93 8e`` is validated explicitly.
+    token or a leading descriptor token before the tag, so the run is
+    validated by consuming every token up to ``01 93 8e``. The ``c0 46 04 00``
+    head additionally bounds its layer and tag values.
 
     > example
     > _legacy_body_token(payload, 846458) -> 98
@@ -98,8 +96,6 @@ def _legacy_body_token(payload, head_offset):
         return None
     body = head_offset + 4 + token[1]
     head = payload[head_offset:head_offset + 4]
-    if payload[body:body + 1] == b"\x02":
-        return token[0] if _body_tag(payload, body) is not None else None
     if head == bytes([0xC0, 0x46, 0x04, 0x00]):
         layer, width = _decode_tag_token(payload, body)
         if layer is None or not 0 <= layer <= 255:
@@ -111,7 +107,7 @@ def _legacy_body_token(payload, head_offset):
         if payload[tail:tail + len(BODY_TAIL)] != BODY_TAIL:
             return None
         return token[0]
-    return None
+    return token[0] if _body_tag(payload, body) is not None else None
 
 
 def _decode_tag_token(data, at):
@@ -246,68 +242,6 @@ def body_palette_records(part_path):
     ]
 
 
-def _bounds_atoms(data):
-    """Decode exactly six colour atoms; ``None`` unless the run is complete.
-
-    Bounds use the same shifted-scalar atom grammar as the palette rows but
-    may mix 4-byte and 8-byte atoms, so each component's width is read from
-    its first byte (scalar/4).  Unlike the lenient palette decoder this
-    rejects leftover or unhandled bytes.
-
-    > example
-    > _bounds_atoms(bytes.fromhex("00 00 00 00 00 00")) -> (0.0,) * 6
-    """
-    values = []
-    at = 0
-    while at < len(data):
-        first = data[at]
-        if first in (0, 1):
-            values.append(float(first))
-            at += 1
-        elif 0x40 <= first <= 0x5F or 0xC0 <= first <= 0xDF:
-            if at + 4 > len(data):
-                return None
-            bits = (bytes([(first - 0x10) & 0xFF]) + data[at + 1:at + 4]
-                    + b"\x00\x00\x00\x00")
-            values.append(struct.unpack(">d", bits)[0] / 4.0)
-            at += 4
-        elif 0x20 <= first <= 0x3F or 0xA0 <= first <= 0xBF:
-            if at + 8 > len(data):
-                return None
-            bits = bytes([(first + 0x10) & 0xFF]) + data[at + 1:at + 8]
-            values.append(struct.unpack(">d", bits)[0] / 4.0)
-            at += 8
-        else:
-            return None
-    return tuple(values) if len(values) == 6 else None
-
-
-def _bounds_before(payload, colour_offset):
-    """Decode the six shifted-double extents before a body colour record.
-
-    The bounds head sits somewhere in the short window before the row's
-    ``47 01 04 01`` opener; current parts use ``f0 01 01 07`` and
-    ``f0 0b 01 07``, legacy OLE parts use ``f0 06 01 07``.  The atom run
-    must consume the bytes up to the opener exactly.
-
-    > example
-    > _bounds_before(payload, site.offset) -> (xmin, ymin, zmin, xmax, ymax, zmax)
-    >   or None when no bounds head/atom run is present
-    """
-    opener = colour_offset - 4
-    if opener <= 0:
-        return None
-    lo = max(0, opener - BOUNDS_SEARCH_WINDOW)
-    for head in BOUNDS_HEADS:
-        start = payload.rfind(head, lo, opener)
-        if start < 0:
-            continue
-        bounds = _bounds_atoms(payload[start + 4:opener])
-        if bounds is not None:
-            return bounds
-    return None
-
-
 def body_palette_bounds_records(part_path):
     """Return palette records with candidate body bounds, when encoded as six doubles.
 
@@ -322,7 +256,7 @@ def body_palette_bounds_records(part_path):
     table = palette_table(payload)
     return [
         (site.token, table.get(site.token),
-         _bounds_before(payload, site.offset))
+         body_bounds.bounds_before(payload, site.offset))
         for site in colour_sites(payload) if site.kind == "body"
     ]
 
@@ -366,7 +300,7 @@ def body_colour_by_tag(part_path):
         out[tag] = {
             "palette": palette,
             "rgb": table.get(palette),
-            "bounds": _bounds_before(payload, site.offset),
+            "bounds": body_bounds.bounds_before(payload, site.offset),
         }
     return out
 
@@ -490,7 +424,7 @@ def body_translucency_records(part_path):
             if 0 < site.offset - off <= 200
         ]
         records.append((
-            _bounds_before(payload, site.offset),
+            body_bounds.bounds_before(payload, site.offset),
             max(percents) if percents else 0,
         ))
     return records

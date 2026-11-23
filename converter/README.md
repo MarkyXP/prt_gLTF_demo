@@ -18,7 +18,8 @@ modules through the flat imports `app.py` sets up (`converter/` is on
 | `parasolid.py`    | Parasolid transmit (`x_b`) handling on top of `s19_route_a` |
 | `row_state.py`    | per-occurrence placement + blank state rows from the UG_PART display-status records |
 | `suppress_state.py` | per-component suppress-state records (structure-row reader + loader-side flag reader) |
-| `color_index.py`  | part-colour record reader (NX palette index) + translucent-percent sites; legacy OLE body rows and `f0 06 01 07` mixed-width bounds |
+| `color_index.py`  | part-colour record reader (NX palette index) + translucent-percent sites; legacy OLE body rows |
+| `body_bounds.py`  | encoded body bounds: `f0 <kind> 01 07` head scan, six mixed-width atoms, optional bookkeeping tail |
 | `body_display.py` | per-body display-state atom reader (blanked/non-displayed bodies) |
 | `rmfastload/`     | RMFastLoad object-id membership parser, complete-set selector, and diagnostics (see its README) |
 | `palette.py`      | palette row-RGB decoder merged over the factory default table |
@@ -27,6 +28,7 @@ modules through the flat imports `app.py` sets up (`converter/` is on
 | `palette_compact.py` | compact `05 <token> <flag> <head> <rgb>` SPLM colour tables |
 | `face_colour.py`  | per-face display-colour rows decoded from `UG_PART` (header model + face-id rank) |
 | `feature_state.py` | conservative NX2412 EXTRUDE state atoms; no feature-name or JT identity join |
+| `model_history.py` | bounded LINKED_BODY records with source/label plus first-atom suppression; no index-based piece join |
 | `nx_default_palette.json` | 216-entry factory colour table fallback |
 | `meshdec2.py` / `runmesh2.py` / `cdpx2.py` / `emu4.py` | mesh/CLI helpers for the tessellation route |
 | `occ_tess.py` / `occ_brep.py` / `parasolid.py` helpers | optional OCCT/Parasolid toolchain glue |
@@ -39,7 +41,8 @@ Modules referenced by the pipelines:
   `s19_route_a.records`, `row_state` (blank flags),
   `suppress_state` (loader suppress flags).
 * leaf part colour: `color_index` (`body_translucency`,
-  `part_colour_index`), `palette` (`palette_table`).
+  `part_colour_index`), `body_bounds` (`bounds_before`), `palette`
+  (`palette_table`).
 * per-face display colours: `face_colour` (`face_colour_rows`,
   `decorate_colour_mesh`). Face ids and palette indices are decoded from
   `UG_PART/UG_PART` marker-headed rows: the `47 03 04 01 c0 44 04 00`

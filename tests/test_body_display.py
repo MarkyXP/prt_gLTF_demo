@@ -10,8 +10,26 @@ from application.resolver.display import (
     drop_undisplayed_bodies,
 )
 import body_display
+from converter.feature_state import STATE_HEAD
 from converter.model_history import LinkedBodyRecord, linked_body_records_from_payload
 from converter.linked_body_visibility import hidden_linked_body_keys
+
+
+LINKED_BODY_HEAD = b"\x03\x0dLINKED_BODY\x00\x1b\x00\x00\x01\x00\x01"
+
+
+def linked_body_record(codes, *, trailer=True):
+    """Build one LINKED_BODY record carrying the given state atom codes.
+
+    > example
+    > linked_body_record([0x01]) -> bytes ending with STATE_HEAD 01 01
+    """
+    result = bytearray(LINKED_BODY_HEAD)
+    for code in codes:
+        result += STATE_HEAD + bytes([code])
+        if trailer:
+            result += b"\x01"
+    return bytes(result)
 
 
 def atom(value):
@@ -106,6 +124,18 @@ class DisplayAtomTests(unittest.TestCase):
             records = body_display.body_display_records("test.prt")
 
         self.assertEqual(records, [(panel, False), (rail, True)])
+
+    def test_reads_state_atom_before_variable_bounds_head(self):
+        bounds = (0.1, 0.1, 0.1, 1.1, 1.1, 1.1)
+        payload = (b"\xf0\x0c\x3d" + b"\xf0\x04\x01\x07"
+                   + b"".join(atom(value) for value in bounds)
+                   + bytes.fromhex("f0002300e024016aa144")
+                   + b"\x47\x01\x04\x01\xc0\x44\x04\x00\x25")
+
+        with patch("color_index.find_ug_part", return_value=payload):
+            records = body_display.body_display_records("test.prt")
+
+        self.assertEqual(records, [(bounds, True)])
 
     def test_ignores_atom_far_from_the_bounds_header(self):
         bounds = (0.1, 0.1, 0.1, 1.1, 1.1, 1.1)
@@ -312,6 +342,151 @@ class ModelHistoryTests(unittest.TestCase):
         self.assertEqual(records[0].body_label, "Body(1)")
         self.assertTrue(records[0].source.endswith("example.prt"))
         self.assertEqual(records[0].visibility, "unknown")
+
+    def test_decodes_first_atom_as_linked_body_suppression(self):
+        payload = linked_body_record([0x04, 0x01]) + \
+            linked_body_record([0x01])
+        records = linked_body_records_from_payload(payload)
+
+        self.assertEqual([record.suppression for record in records],
+                         ["unsuppressed", "suppressed"])
+        self.assertEqual([record.visibility for record in records],
+                         ["unknown", "unknown"])
+
+    def test_decodes_unsuppressed_linked_body_codes(self):
+        payload = linked_body_record([0x04]) + linked_body_record([0x05])
+        records = linked_body_records_from_payload(payload)
+
+        self.assertEqual([record.suppression for record in records],
+                         ["unsuppressed", "unsuppressed"])
+
+    def test_multi_atom_front_run_is_governed_by_first_atom(self):
+        payload = linked_body_record([0x01, 0x01]) + \
+            linked_body_record([0x04, 0x04])
+        records = linked_body_records_from_payload(payload)
+
+        self.assertEqual([record.suppression for record in records],
+                         ["suppressed", "unsuppressed"])
+
+    def test_trailing_atoms_do_not_override_own_state(self):
+        payload = linked_body_record([0x04, 0x01, 0x04, 0x04]) + \
+            linked_body_record([0x01, 0x04, 0x04])
+        records = linked_body_records_from_payload(payload)
+
+        self.assertEqual([record.suppression for record in records],
+                         ["unsuppressed", "suppressed"])
+
+    def test_legacy_linked_body_without_atom_is_unknown(self):
+        payload = (LINKED_BODY_HEAD + b"J:\\parts\\example.prt\x00")
+        records = linked_body_records_from_payload(payload)
+
+        self.assertEqual([record.suppression for record in records],
+                         ["unknown"])
+
+    def test_unrecognised_or_incomplete_atom_is_unknown(self):
+        payload = linked_body_record([0x07]) + \
+            linked_body_record([0x01], trailer=False)
+        records = linked_body_records_from_payload(payload)
+
+        self.assertEqual([record.suppression for record in records],
+                         ["unknown", "unknown"])
+
+
+class LinkedBodySuppressionFilterTests(unittest.TestCase):
+    def suppressed_history(self, count=1):
+        """Build suppressed linked-body records with distinct offsets."""
+        return [
+            LinkedBodyRecord(index=index, offset=index, source="part.prt",
+                             body_label="Body(%d)" % (index + 1),
+                             suppression="suppressed")
+            for index in range(count)
+        ]
+
+    def test_inert_without_suppression_evidence(self):
+        visible = (0, 0, 0, 1, 1, 1)
+        metal = (10, 0, 0, 11, 1, 1)
+        history = [
+            LinkedBodyRecord(index=0, offset=0, source="part.prt",
+                             body_label="Body(1)", suppression="unknown")
+        ]
+
+        with patch("body_display.body_display_records",
+                   return_value=[(visible, False)]), \
+                patch("converter.model_history.linked_body_records",
+                      return_value=history):
+            kept, dropped = drop_undisplayed_bodies(
+                "test.prt", [piece(0, visible), piece(1, metal)])
+
+        self.assertEqual(dropped, 0)
+        self.assertEqual([entry["jtPiece"] for entry in kept], [0, 1])
+
+    def test_inert_when_body_records_empty(self):
+        metal = (10, 0, 0, 11, 1, 1)
+
+        with patch("body_display.body_display_records", return_value=[]), \
+                patch("converter.model_history.linked_body_records",
+                      return_value=self.suppressed_history()):
+            kept, dropped = drop_undisplayed_bodies(
+                "test.prt", [piece(0, metal)])
+
+        self.assertEqual(dropped, 0)
+        self.assertEqual([entry["jtPiece"] for entry in kept], [0])
+
+    def test_inert_when_a_body_record_is_unanchored(self):
+        visible = (0, 0, 0, 1, 1, 1)
+        missing = (50, 50, 50, 51, 51, 51)
+        metal = (10, 0, 0, 11, 1, 1)
+
+        with patch("body_display.body_display_records",
+                   return_value=[(visible, False), (missing, False)]), \
+                patch("converter.model_history.linked_body_records",
+                      return_value=self.suppressed_history(2)):
+            kept, dropped = drop_undisplayed_bodies(
+                "test.prt", [piece(0, visible), piece(1, metal)])
+
+        self.assertEqual(dropped, 0)
+        self.assertEqual([entry["jtPiece"] for entry in kept], [0, 1])
+
+    def test_drops_uncovered_non_box_piece_when_suppression_decoded(self):
+        visible = (0, 0, 0, 1, 1, 1)
+        metal = (10, 0, 0, 11, 1, 1)
+
+        with patch("body_display.body_display_records",
+                   return_value=[(visible, False)]), \
+                patch("converter.model_history.linked_body_records",
+                      return_value=self.suppressed_history()):
+            kept, dropped = drop_undisplayed_bodies(
+                "test.prt", [piece(0, visible), piece(1, metal)])
+
+        self.assertEqual(dropped, 1)
+        self.assertEqual([entry["jtPiece"] for entry in kept], [0])
+
+    def test_keeps_piece_covered_by_a_body_record(self):
+        visible = (0, 0, 0, 1, 1, 1)
+
+        with patch("body_display.body_display_records",
+                   return_value=[(visible, False)]), \
+                patch("converter.model_history.linked_body_records",
+                      return_value=self.suppressed_history()):
+            kept, dropped = drop_undisplayed_bodies(
+                "test.prt", [piece(0, visible)])
+
+        self.assertEqual(dropped, 0)
+        self.assertEqual([entry["jtPiece"] for entry in kept], [0])
+
+    def test_keeps_axis_aligned_box(self):
+        visible = (0, 0, 0, 1, 1, 1)
+        metal_box = (10, 0, 0, 11, 1, 1)
+
+        with patch("body_display.body_display_records",
+                   return_value=[(visible, False)]), \
+                patch("converter.model_history.linked_body_records",
+                      return_value=self.suppressed_history()):
+            kept, dropped = drop_undisplayed_bodies(
+                "test.prt", [piece(0, visible), box_piece(1, metal_box)])
+
+        self.assertEqual(dropped, 0)
+        self.assertEqual([entry["jtPiece"] for entry in kept], [0, 1])
 
 
 if __name__ == "__main__":
