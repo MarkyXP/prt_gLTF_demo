@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import struct
 
+import fastload_prototype
+
 ENVELOPE_LEN = 12
 PAYLOAD_LEN_OFFSET = 8
 ENVELOPE_HEAD = b"\xff\xff\xff\xff\x00\x00\x00\x00"
@@ -297,6 +299,10 @@ def parse_roster(entry):
             candidates.append(candidate)
     selected = _select_candidate(candidates)
     if selected is None:
+        if ROSTER_ANCHOR not in payload:
+            legacy = fastload_prototype.parse_prototype_first(payload)
+            if legacy is not None:
+                return legacy
         return empty_roster()
     prototypes = [
         {"ordinal": ordinal, "name": name}

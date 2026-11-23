@@ -33,6 +33,7 @@ from .accounting import (
 from .display import (
     drop_unassociated_envelope_boxes,
     drop_undisplayed_bodies,
+    has_visible_body_evidence,
     paint_body_display,
 )
 from ..geometry import is_proxy_collection, mark_proxy, mesh_collection
@@ -249,9 +250,11 @@ def _convert_part_path(path: str | Path, seen: set[str],
         time.perf_counter() - started)
 
     direct_jt = bool(
-        jt_collection and not is_proxy_collection(jt_collection))
+        jt_collection and (
+            not is_proxy_collection(jt_collection)
+            or has_visible_body_evidence(str(path), jt_collection)))
     defer_parasolid = bool(ref_names and not direct_jt)
-    if ref_names and direct_jt:
+    if direct_jt:
         LOGGER.info(
             "part=%s step=parasolid skipped reason=direct-jt",
             logical_name)
@@ -295,9 +298,15 @@ def _convert_part_path(path: str | Path, seen: set[str],
     missing_names = []
     nested_missing = []
     skipped_hidden = []
-    families = placement_families(data)
+    structure = assembly_structure(data)
+    roster = (structure or {}).get("roster") or {}
+    families = placement_families(data, roster=roster)
     om_payload = placement_payload(data)
-    structure = assembly_structure(data) if families else None
+    expected_occurrences = len(roster.get("occurrences") or ())
+    placement_confirmed = bool(
+        expected_occurrences > 1 and families
+        and sum(len(group) for _key, group in families)
+        == expected_occurrences)
     resolved_meshes = {}
     resolved_paths = {}
     ambiguous_children = ambiguous_child_placement(
@@ -333,7 +342,9 @@ def _convert_part_path(path: str | Path, seen: set[str],
             continue
         if is_suppressed_child(ref_name, suppressed) or \
                 is_external_reference_child(
-                    ref_name, external_names, direct_jt):
+                    ref_name, external_names, direct_jt,
+                    roster=roster,
+                    placement_confirmed=placement_confirmed):
             skipped_hidden.append(ref_name)
             count_skip(context, "skipped_hidden")
             LOGGER.info(
@@ -465,6 +476,8 @@ def _convert_part_path(path: str | Path, seen: set[str],
         resolution, logical_name, ref_names, resolved_names, missing_names,
         nested_missing, skipped_hidden, "no-proxy", pair_notes)
     if referenced:
+        if collection and direct_jt:
+            return finish(collection + referenced, includes_children=True)
         return finish(referenced, includes_children=True)
     if primary is not None:
         raise RuntimeError("%s; referenced local parts had no usable "

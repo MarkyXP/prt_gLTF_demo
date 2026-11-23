@@ -59,10 +59,32 @@ def referenced_part_paths(path):
 
 
 def referenced_part_names(data):
-    """Return unique referenced .prt basenames from object-model metadata."""
+    """Return unique referenced .prt basenames from framed metadata strings.
+
+    A ``.prt`` token only counts when it starts a length-prefixed object-model
+    string: the preceding little-endian u16 equals the token length. Free-text
+    history comments (``Part renamed from "...template 1.prt"``) embed names
+    inside a longer string and are ignored, so they cannot become children.
+
+    > example
+    >>> referenced_part_names(b"\\x73\\x20\\x4e\\x54\\x00\\x00\\x09\\x00wheel.prt")
+    ['wheel.prt']
+    >>> referenced_part_names(b'Part renamed from "template 1.prt"')
+    []
+    """
     names = []
     seen = set()
-    for raw in PART_REF_RE.findall(data or b""):
+    blob = data or b""
+    for match in PART_REF_RE.finditer(blob):
+        start = match.start()
+        if start < 2:
+            continue
+        raw = match.group()
+        length16 = struct.unpack_from("<H", blob, start - 2)[0]
+        length32 = (struct.unpack_from("<I", blob, start - 4)[0]
+                    if start >= 4 else 0)
+        if len(raw) not in (length16, length32):
+            continue
         name = raw.decode("ascii", "ignore")
         key = name.lower()
         if key not in seen:

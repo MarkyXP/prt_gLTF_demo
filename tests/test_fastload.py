@@ -11,6 +11,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "converter"))
 
 import fastload  # noqa: E402
+import fastload_prototype  # noqa: E402
 
 
 class FastloadRosterTests(unittest.TestCase):
@@ -63,6 +64,24 @@ class FastloadRosterTests(unittest.TestCase):
         bad_marker = fastload.synthetic_structure(["gear"], [1], b"0")
         self.assertEqual(
             fastload.parse_roster(bad_marker)["prototypes"], [])
+
+    def test_prototype_first_layout_is_parsed_when_model_anchored(self):
+        entry = fastload_prototype.synthetic_payload(
+            ["NUT", "PLUNGER"], [1, 1, 2], identities=("dev.1",))
+        roster = fastload.parse_roster(entry)
+        self.assertEqual([item["name"] for item in roster["prototypes"]],
+                         ["NUT", "PLUNGER"])
+        self.assertEqual(
+            [item["prototype_index"] for item in roster["occurrences"]],
+            [1, 1, 2])
+        self.assertEqual(
+            [item["uuid_index"] for item in roster["occurrences"]],
+            [1, 1, 1])
+
+    def test_prototype_first_without_model_is_not_authoritative(self):
+        entry = fastload_prototype.synthetic_payload(["NUT"], [1])
+        pay = entry.replace(fastload_prototype.MODEL_FRAME, b"")
+        self.assertEqual(fastload.parse_roster(pay)["prototypes"], [])
 
     def test_roster_from_streams_requires_one_structure_entry(self):
         entry = fastload.synthetic_structure(["gear"], [1], b"9")

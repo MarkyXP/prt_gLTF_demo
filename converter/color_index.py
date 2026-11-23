@@ -6,9 +6,10 @@ checked:
 
     record opener   47 01 04 01
     colour header   c0 44 04 00  (current) / c0 44 84 00, c0 40 84 00,
-                    c0 46 04 04  (legacy body-row family)
+                    c0 46 04 04, c0 40 04 00, c0 43 04 00
+                    (legacy body-row family)
     colour token    <OM int token that decodes to palette index + 1>
-    row tail        02 <tag token> 01 93 8e
+    row tail        <OM int descriptor tokens> 01 93 8e
 
 Verified against controlled saves (fresh-session reload read-back):
   * token 0x25            -> object reports colour 36
@@ -47,6 +48,8 @@ LEGACY_BODY_HEADS = (
     bytes([0xC0, 0x44, 0x84, 0x00]),
     bytes([0xC0, 0x40, 0x84, 0x00]),
     bytes([0xC0, 0x46, 0x04, 0x04]),
+    bytes([0xC0, 0x40, 0x04, 0x00]),
+    bytes([0xC0, 0x43, 0x04, 0x00]),
 )
 HEADS = (HEAD,) + LEGACY_BODY_HEADS
 BOUNDS_HEADS = (bytes([0xF0, 0x01, 0x01, 0x07]),
@@ -55,6 +58,8 @@ BOUNDS_HEADS = (bytes([0xF0, 0x01, 0x01, 0x07]),
 BOUNDS_SEARCH_WINDOW = 80
 BODY_OPENER = bytes([0x47, 0x01, 0x04, 0x01])
 SUB_OPENER = bytes([0x47, 0x04, 0x04, 0x01])
+BODY_TAIL = bytes([0x01, 0x93, 0x8E])
+BODY_TAG_WINDOW = 9
 
 
 def _decode_token(data, at):
@@ -65,6 +70,8 @@ def _decode_token(data, at):
     learned compact-wide form for larger ones: [0x80, 0x81] decodes to
     (0x80-0x80)*256 + 0x81 + 1 = 130 -> palette 129.
     """
+    if at >= len(data):
+        return None
     b0 = data[at]
     if b0 < 0x80:
         return b0 - 1, 1
@@ -93,9 +100,68 @@ def _legacy_body_token(payload, head_offset):
     tag = _decode_token(payload, body + 1)
     if tag is None:
         return None
-    if payload[body + 1 + tag[1]:body + 4 + tag[1]] != b"\x01\x93\x8e":
+    if payload[body + 1 + tag[1]:body + 4 + tag[1]] != BODY_TAIL:
         return None
     return token[0]
+
+
+def _decode_tag_token(data, at):
+    """OM int token at `at` -> (raw value, token length) or None.
+
+    Body tags are stored as plain OM ints, not palette-minus-one values, and
+    may use the wide forms ``80 <lo>`` (two bytes) or ``90 <hi> <lo>`` (three
+    bytes).  A token that crosses the end of the buffer fails closed.
+
+    > example
+    > _decode_tag_token(b"\\x08", 0) -> (8, 1)
+    > _decode_tag_token(b"\\x80\\x8b", 0) -> (139, 2)
+    > _decode_tag_token(b"\\x81\\x0f", 0) -> (271, 2)
+    """
+    if at >= len(data):
+        return None
+    first = data[at]
+    if first < 0x80:
+        return first, 1
+    if first < 0x90:
+        if at + 1 >= len(data):
+            return None
+        return (first - 0x80) * 256 + data[at + 1], 2
+    if first < 0xB0:
+        if at + 2 >= len(data):
+            return None
+        return ((first - 0x90) * 65536
+                + (data[at + 1] << 8) + data[at + 2]), 3
+    return None
+
+
+def _body_tag(payload, body):
+    """Body tag = raw value of the last OM int token before ``01 93 8e``.
+
+    The descriptor between the palette token and the body tail can be a plain
+    ``02 <tag>`` pair, a wide-tag pair such as ``02 80 8b``, or a prefixed form
+    such as ``81 0f <tag>``.  Only a run that consumes the bytes up to the
+    body tail exactly yields a tag; truncated or malformed rows return None.
+
+    > example
+    > _body_tag(b"\\x02\\x08\\x01\\x93\\x8e", 0) -> 8
+    > _body_tag(b"\\x81\\x0f\\x0d\\x01\\x93\\x8e", 0) -> 13
+    > _body_tag(b"\\x02\\x80\\x8b\\x01\\x93\\x8e", 0) -> 139
+    > _body_tag(b"\\x02\\x08\\x01\\x93", 0) -> None
+    """
+    tail = payload.find(BODY_TAIL, body, body + BODY_TAG_WINDOW)
+    if tail <= body:
+        return None
+    value = None
+    at = body
+    while at < tail:
+        token = _decode_tag_token(payload, at)
+        if token is None:
+            return None
+        value, width = token
+        at += width
+    if at != tail:
+        return None
+    return value
 
 
 def colour_sites(payload):
@@ -255,14 +321,16 @@ def body_palette_bounds_records(part_path):
 def body_colour_by_tag(part_path):
     """Map each body tag to its decoded colour and candidate bounds.
 
-    A body-colour record is followed by a body row of the form::
+    A body-colour record is followed by a descriptor and the body tail::
 
-        02 <body_tag> 01 93 8e ...
+        <OM int descriptor tokens> 01 93 8e ...
 
-    so the tag is directly readable after the palette token. Records whose
-    tail is not a body row are ignored. The bounds come from the six encoded
-    doubles that precede the colour header and are used only to break ties
-    between bodies that share a face count.
+    The body tag is the raw value of the last descriptor token, so both
+    ``02 <tag>`` and wide/prefixed forms such as ``02 80 8b`` and
+    ``81 0f <tag>`` bind. Records whose descriptor does not consume the bytes
+    up to the tail are ignored. The bounds come from the six encoded doubles
+    that precede the colour header and are used only to break ties between
+    bodies that share a face count.
 
     > example
     > body_colour_by_tag("loom.prt")
@@ -283,10 +351,8 @@ def body_colour_by_tag(part_path):
             continue
         palette, width = decoded
         body = site.offset + 4 + width
-        if payload[body:body + 1] != b"\x02":
-            continue
-        tag = payload[body + 1]
-        if payload[body + 2:body + 5] != b"\x01\x93\x8e":
+        tag = _body_tag(payload, body)
+        if tag is None:
             continue
         out[tag] = {
             "palette": palette,

@@ -73,11 +73,11 @@ def meaningful_part_references(data: bytes,
                                own_name: str | os.PathLike | None = None) -> list[str]:
     """Return real component references, excluding NX boilerplate and self.
 
-    Exact EXTREFSTREAM names win when the stream is valid. The historical
-    regex scan remains the fallback for parts without a valid stream, and
-    also when the exact table names nothing but the part itself (some
-    single-part files write a self-only EXTREFSTREAM; keeping the legacy
-    list preserves their direct-JT precedence).
+    A valid EXTREFSTREAM is authoritative even when it names only the part
+    itself: those files have no component children, so unrelated free-text
+    ``.prt`` tokens in their history metadata must not be promoted to
+    children. The framed-regex scan is only for parts without a valid exact
+    table.
 
     > example
     > meaningful_part_references(part_bytes, "cap.prt")
@@ -86,9 +86,7 @@ def meaningful_part_references(data: bytes,
     own = Path(own_name).name.lower() if own_name else None
     valid, exact_names, _roots = exact_reference_summary(data)
     if valid:
-        names = _meaningful_names(exact_names, own)
-        if names:
-            return names
+        return _meaningful_names(exact_names, own)
     return _meaningful_names(parasolid.referenced_part_names(data), own)
 
 

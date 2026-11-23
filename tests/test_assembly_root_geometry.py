@@ -9,6 +9,7 @@ from unittest.mock import patch
 from application import config  # noqa: F401  (adds converter/ to sys.path)
 from application.resolver import pipeline
 from application.resolver.accounting import ConversionContext
+from test_jt_piece_selection import box_mesh
 
 
 class AssemblyRootGeometryTests(unittest.TestCase):
@@ -140,6 +141,45 @@ class AssemblyRootGeometryTests(unittest.TestCase):
         self.assertEqual(
             resolution["assemblies"][0]["proxy_display"],
             "placed-instances")
+
+
+    def test_body_evidence_skips_parasolid_for_direct_jt_box(self):
+        box = {"id": "box", "t": box_mesh()}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "plate.prt")
+            path.write_bytes(b"fixture")
+            with ExitStack() as stack:
+                for mocked in (
+                    patch.object(pipeline, "reference_roots",
+                                 return_value=[]),
+                    patch.object(pipeline, "meaningful_part_references",
+                                 return_value=[]),
+                    patch.object(pipeline, "mesh_collection",
+                                 return_value=[box]),
+                    patch.object(pipeline, "drop_undisplayed_bodies",
+                                 return_value=([box], 0)),
+                    patch.object(pipeline, "drop_unassociated_envelope_boxes",
+                                 return_value=([box], 0)),
+                    patch.object(pipeline, "paint_body_display",
+                                 return_value=([box], 0)),
+                    patch.object(pipeline, "record_rmfastload"),
+                    patch.object(pipeline, "is_proxy_collection",
+                                 return_value=True),
+                    patch.object(pipeline, "has_visible_body_evidence",
+                                 return_value=True),
+                    patch.object(pipeline.parasolid, "convert",
+                                 side_effect=AssertionError(
+                                     "parasolid must not run")),
+                ):
+                    stack.enter_context(mocked)
+
+                result = pipeline._convert_part_path(
+                    path, seen=set(), resolution={"assemblies": []},
+                    source_name=None, progress=None, artifact=None,
+                    parallel_workers=1, parallel_depth=0,
+                    context=ConversionContext())
+
+        self.assertEqual(result, [box])
 
 
 if __name__ == "__main__":

@@ -55,29 +55,39 @@ class ReferenceResolutionTests(unittest.TestCase):
             ["exact_child.prt"])
         self.assertIn("D:\\exact", reference_roots(blob))
 
-    def test_invalid_extref_falls_back_to_regex_scan(self):
+    def test_invalid_extref_falls_back_to_framed_references_only(self):
         bad = bytearray(extref_stream(
             ["exact_child.prt", "O", "D:\\exact", "RM"],
             [handle_record([0, 1, 2, 3], [7])]))
         bad[12] = 9
         blob = splm_container({
             "/Root/UG_PART/ExternalReferences": bytes(bad),
-            "/Root/UG_PART/UG_PART": b"prefix stale_child.prt suffix",
+            "/Root/UG_PART/UG_PART":
+                b"prefix stale_child.prt suffix\x10\x00framed_child.prt",
         })
         names = meaningful_part_references(blob, "root.prt")
-        self.assertIn("stale_child.prt", names)
-        self.assertIn("exact_child.prt", names)
+        self.assertIn("framed_child.prt", names)
+        self.assertNotIn("stale_child.prt", names)
 
-    def test_valid_self_only_extref_keeps_legacy_fallback(self):
+    def test_valid_self_only_extref_does_not_authorise_history_names(self):
         extref_payload = extref_stream(
             ["root.prt", "O", "D:\\exact", "RM"],
             [handle_record([0, 1, 2, 3], [7])])
         blob = splm_container({
             "/Root/UG_PART/ExternalReferences": extref_payload,
-            "/Root/UG_PART/UG_PART": b"prefix stale_child.prt suffix",
+            "/Root/UG_PART/UG_PART":
+                b'Part renamed from "C:/templates/model_template 1.prt"',
+        })
+        self.assertEqual(meaningful_part_references(blob, "root.prt"), [])
+
+    def test_invalid_extref_rejects_history_comment_tokens(self):
+        blob = splm_container({
+            "/Root/UG_PART/ExternalReferences": b"not an extref stream",
+            "/Root/UG_PART/UG_PART":
+                b'Part renamed from "C:/templates/1.prt"\x10\x00framed_child.prt',
         })
         self.assertEqual(meaningful_part_references(blob, "root.prt"),
-                         ["stale_child.prt"])
+                         ["framed_child.prt"])
 
     def test_generic_templates_and_self_are_still_filtered(self):
         extref_payload = extref_stream(

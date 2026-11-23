@@ -53,8 +53,41 @@ def assembly_structure(data: bytes) -> dict:
     }
 
 
-def placement_families(data: bytes):
+def _roster_families(roster, frames):
+    """Split connector-less occurrence frames by roster prototype sequence.
+
+    Some writers serialize component placements without per-frame connector,
+    name, or UUID tokens. The FastLoad roster still gives a one-to-one
+    prototype-index sequence, so the dense placement run can be partitioned
+    into component-master families in serialized order.
+
+    > example
+    > _roster_families(roster, frames)
+      -> [(("name", "GEAR"), [frame, ...]), (("name", "ROD"), [frame, ...])]
+    """
+    occurrences = roster.get("occurrences") or []
+    prototypes = roster.get("prototypes") or []
+    ordered = sorted(frames, key=lambda frame: frame["off"])
+    if not occurrences or len(ordered) != len(occurrences):
+        return None
+    groups = {}
+    for occurrence, frame in zip(occurrences, ordered):
+        index = occurrence.get("prototype_index", 0) - 1
+        if not 0 <= index < len(prototypes):
+            return None
+        key = ("name", str(prototypes[index]["name"]).upper())
+        groups.setdefault(key, []).append(frame)
+    return sorted(groups.items(),
+                  key=lambda item: min(frame["off"] for frame in item[1]))
+
+
+def placement_families(data: bytes, roster: dict | None = None):
     """Return structured component placement families, or ``None``.
+
+    A parsed FastLoad roster supplies the expected occurrence count so the
+    true assembly record wins over a larger model-history record. All
+    connector-less families are retained only when the selected dense run
+    matches that roster count exactly; they are split by prototype order.
 
     > example
     > placement_families(part_bytes)
@@ -63,17 +96,42 @@ def placement_families(data: bytes):
     payload = object_model_payload(data)
     if payload is None:
         return None
+    if roster is None:
+        try:
+            roster = fastload.roster_from_streams(
+                prt_jt.open_prt_bytes(data))
+        except Exception:
+            roster = None
+    expected = len((roster or {}).get("occurrences") or ())
     try:
         frames = assembly_pairing.placement_frames(payload)
         records = s19_route_a.records(payload)
-        scoped = assembly_pairing.structured_frames(records, frames)
+        scoped = assembly_pairing.structured_frames(
+            records, frames,
+            expected_count=expected if expected > 1 else None)
         families = assembly_pairing.cluster_families(payload, scoped)
+        validated = bool(expected > 1 and len(scoped) == expected)
+        prototype_indices = {
+            occurrence.get("prototype_index")
+            for occurrence in (roster or {}).get("occurrences") or ()
+        }
+        if validated and len(prototype_indices) > 1 and len(families) == 1:
+            # A shared connector token (or a bare connector-less run) merged
+            # several component masters into one bucket; the roster is the
+            # only per-occurrence identity available, so partition by its
+            # prototype-index sequence.
+            split = _roster_families(roster, scoped)
+            if split:
+                families = split
+        keep_unidentified = validated and not any(
+            key and key[0] != "none" for key, _group in families)
         # Rigid matrices without an occurrence token are view/working-frame
         # transforms, not component placements. Pairing them to a child
-        # duplicates that child at arbitrary locations.
+        # duplicates that child at arbitrary locations. The whole selected
+        # set is unidentified only when a roster validated it as occurrences.
         return [
             (key, group) for key, group in families
-            if key and key[0] != "none"
+            if key and (key[0] != "none" or keep_unidentified)
         ]
     except Exception:
         return None

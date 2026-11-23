@@ -24,7 +24,35 @@ from .tokens import (
 )
 
 
-def structured_frames(records, frames):
+def _leading_run(group):
+    """First dense run of a frame group, stopping at a large placement gap.
+
+    Component occurrences are written back-to-back; model-history/arrangement
+    transforms sit in the same record but after a much larger byte gap. The
+    gap threshold is derived from the group's own median spacing, so it is
+    writer-independent.
+
+    > example
+    >>> _leading_run([{"off": 0, "end": 10}, {"off": 20, "end": 30}])
+    [{'off': 0, 'end': 10}, {'off': 20, 'end': 30}]
+    """
+    ordered = sorted(group, key=lambda frame: frame["off"])
+    if len(ordered) < 2:
+        return ordered
+    gaps = [later["off"] - earlier["end"]
+            for earlier, later in zip(ordered, ordered[1:])]
+    positive = sorted(gap for gap in gaps if gap > 0)
+    median = positive[len(positive) // 2] if positive else 0
+    threshold = max(256, median * 4)
+    run = [ordered[0]]
+    for frame, gap in zip(ordered[1:], gaps):
+        if gap > threshold:
+            break
+        run.append(frame)
+    return run
+
+
+def structured_frames(records, frames, expected_count=None):
     """Placement frames that live in an assembly-structure OM record.
 
     Scattered view/other matrices appear as single frames in their own
@@ -33,6 +61,11 @@ def structured_frames(records, frames):
     record group(s) hosting the most frames and drop singleton groups while
     a clear leader exists (this drops the isolated view transforms of the
     corpus parent while keeping its child occurrences).
+
+    When a component roster supplies ``expected_count``, the record whose
+    dense leading run matches that occurrence count wins. This prefers the
+    true assembly record over a larger model-history record. Without a unique
+    match the historical largest-group rule is unchanged.
 
     > example
     >>> records = [{"off": 100, "end": 200}]
@@ -52,6 +85,15 @@ def structured_frames(records, frames):
                 break
     if not grouped:
         return frames
+    if expected_count and expected_count > 1:
+        matches = []
+        for (start, end), group in grouped.items():
+            run = _leading_run(group)
+            if len(run) == expected_count:
+                matches.append((len(group), start, end, run))
+        if matches:
+            matches.sort(key=lambda item: (item[0], item[1]))
+            return matches[0][3]
     best_size = max(len(value) for value in grouped.values())
     keepers = [group for group in grouped.values() if len(group) == best_size]
     merged = []

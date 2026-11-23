@@ -277,6 +277,38 @@ def drop_undisplayed_bodies(path: str,
     return kept, len(collection) - len(kept)
 
 
+def has_visible_body_evidence(path: str, collection: list[dict]) -> bool:
+    """Whether a box collection is actually a visible NX body.
+
+    A real six-face box body (for example a rectangular plate) is
+    geometrically indistinguishable from a proxy envelope. Positive
+    body-display evidence breaks the tie: every mesh must be an axis-aligned
+    box and bind by encoded bounds to a visible body record.
+
+    > example
+    > has_visible_body_evidence("plate.prt", box_collection)
+      -> True when a visible body record matches the box bounds
+    """
+    if not collection or not all(
+            is_axis_aligned_box(entry.get("t", {})) for entry in collection):
+        return False
+    try:
+        from body_display import body_display_records
+        states = body_display_records(str(path))
+    except Exception:
+        LOGGER.exception("Failed to read body display state for %s", path)
+        return False
+    if not states:
+        return False
+    records = [(index, None, bounds)
+               for index, (bounds, _hidden) in enumerate(states)]
+    matches = _match_body_bounds(collection, records) or {}
+    return (
+        len(matches) == len(collection)
+        and all(not states[index][1] for index in matches.values())
+    )
+
+
 def drop_unassociated_envelope_boxes(
     path: str, collection: list[dict]
 ) -> tuple[list[dict], int]:

@@ -33,6 +33,34 @@ class EarlyVisibilityTests(unittest.TestCase):
                 frozenset({"a_oring_template.prt"}),
                 False))
 
+    def test_roster_occurrence_overrides_external_reference_overlap(self):
+        roster = {"prototypes": [{"name": "WIDGET"}, {"name": "CAP"}]}
+        self.assertFalse(
+            is_external_reference_child(
+                "widget.prt", frozenset({"widget.prt"}), True,
+                roster=roster, placement_confirmed=True))
+
+    def test_unconfirmed_roster_name_keeps_external_reference_gate(self):
+        roster = {"prototypes": [{"name": "WIDGET"}]}
+        self.assertTrue(
+            is_external_reference_child(
+                "widget.prt", frozenset({"widget.prt"}), True,
+                roster=roster, placement_confirmed=False))
+
+    def test_roster_prototype_mismatch_keeps_external_reference_gate(self):
+        roster = {"prototypes": [{"name": "CAP"}]}
+        self.assertTrue(
+            is_external_reference_child(
+                "widget.prt", frozenset({"widget.prt"}), True,
+                roster=roster, placement_confirmed=True))
+
+    def test_external_reference_without_direct_geometry_still_renders(self):
+        roster = {"prototypes": [{"name": "WIDGET"}]}
+        self.assertFalse(
+            is_external_reference_child(
+                "widget.prt", frozenset({"widget.prt"}), False,
+                roster=roster, placement_confirmed=True))
+
     @patch(
         "application.suppression.prt_jt.open_prt_bytes",
         return_value={

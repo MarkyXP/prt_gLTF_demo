@@ -58,20 +58,58 @@ def external_reference_names(data: bytes) -> frozenset[str]:
     return frozenset(names)
 
 
+def _part_stem(name: str) -> str:
+    """Case-insensitive part stem without a ``.prt`` suffix.
+
+    > example
+    > _part_stem("C:/parts/WIDGET.PRT") -> "widget"
+    """
+    text = reference_basename(str(name)).casefold()
+    return text[:-4] if text.endswith(".prt") else text
+
+
+def roster_names_child(name: str, roster: dict | None) -> bool:
+    """Whether a FastLoad roster prototype names this child stem.
+
+    > example
+    > roster_names_child("widget.prt", {"prototypes": [{"name": "WIDGET"}]})
+    True
+    """
+    if not roster:
+        return False
+    stem = _part_stem(name)
+    return any(_part_stem(prototype.get("name") or "") == stem
+               for prototype in roster.get("prototypes") or ())
+
+
 def is_external_reference_child(name: str,
                                 external_names: frozenset[str],
-                                parent_has_direct_geometry: bool) -> bool:
+                                parent_has_direct_geometry: bool,
+                                roster: dict | None = None,
+                                placement_confirmed: bool = False) -> bool:
     """Return whether a direct-JT child is NX reference geometry.
+
+    A name that merely appears in an ``ExternalReferences`` stream is only
+    reference geometry. When a FastLoad occurrence roster and a matching
+    placement run both confirm the name as a real component occurrence, the
+    ExternalReferences overlap is a writer artefact and the child is kept.
 
     > example
     > is_external_reference_child(
     ...     "a_oring_template.prt", frozenset({"a_oring_template.prt"}), True)
     ... -> True
+    > is_external_reference_child(
+    ...     "WIDGET.prt", frozenset({"widget.prt"}), True,
+    ...     roster={"prototypes": [{"name": "WIDGET"}]},
+    ...     placement_confirmed=True)
+    ... -> False
     """
-    return (
-        parent_has_direct_geometry
-        and reference_basename(name).casefold() in external_names
-    )
+    if not (parent_has_direct_geometry
+            and reference_basename(name).casefold() in external_names):
+        return False
+    if placement_confirmed and roster_names_child(name, roster):
+        return False
+    return True
 
 
 def suppressed_child_names(data: bytes) -> frozenset[str]:
