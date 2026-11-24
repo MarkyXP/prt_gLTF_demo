@@ -1,8 +1,14 @@
 """Regression tests for legacy NX face colour and translucency rows."""
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from converter.face_colour import _split_face_display_entries
+from converter.face_colour import (
+    _partitioned_colour_entries,
+    _split_face_display_entries,
+    decorate_colour_mesh,
+)
 from converter.face_display import (
     FaceDisplayRecord,
     face_display_records,
@@ -107,6 +113,78 @@ class SplitFaceMeshTests(unittest.TestCase):
         self.assertEqual(detail[0]["color"], [1.0, 1.0, 1.0, 0.68])
         self.assertTrue(all(entry["color"] == [0.0, 1.0, 1.0]
                             for entry in main))
+
+
+class PartitionedColourMeshTests(unittest.TestCase):
+    def test_override_rows_and_inherited_rows_partition_two_meshes(self):
+        rows = ([(9, 100 + index, None) for index in range(3)]
+                + [(9, 200 + index, 155) for index in range(2)])
+        decoded = [{
+            "piece": 0,
+            "meshes": [
+                {"tris": [(0, 1, 2)] * 3, "faceGroups": [0, 1, 2],
+                 "pts": [(0, 0, 0)]},
+                {"tris": [(0, 1, 2)] * 2, "faceGroups": [0, 1],
+                 "pts": [(0, 0, 0)]},
+            ],
+        }]
+        entries = _partitioned_colour_entries(
+            rows, decoded, "UG_PART/JT", 130,
+            {130: (0.4, 0.4, 0.4), 155: (0.8, 0.2, 0.2)})
+        by_mesh = {entry["meshIndex"]: entry for entry in entries}
+        self.assertEqual(by_mesh[0]["color"], [0.4, 0.4, 0.4])
+        self.assertEqual(by_mesh[1]["color"], [0.8, 0.2, 0.2])
+
+    def test_multiple_override_palettes_remain_unassigned(self):
+        rows = [(9, 100, None), (9, 200, 155), (9, 300, 156)]
+        decoded = [{
+            "piece": 0,
+            "meshes": [
+                {"tris": [(0, 1, 2)], "faceGroups": [0]},
+                {"tris": [(0, 1, 2)] * 2, "faceGroups": [0, 1]},
+            ],
+        }]
+        self.assertIsNone(_partitioned_colour_entries(
+            rows, decoded, "UG_PART/JT", 130,
+            {130: (0.4, 0.4, 0.4), 155: (0.8, 0.2, 0.2),
+             156: (0.2, 0.8, 0.2)}))
+
+    def test_splm_container_uses_the_partitioned_face_path(self):
+        rows = ([(9, 100 + index, None) for index in range(3)]
+                + [(9, 200 + index, 155) for index in range(2)])
+        decoded = [{
+            "piece": 0,
+            "meshes": [
+                {"pts": [(0, 0, 0)], "tris": [(0, 1, 2)] * 3,
+                 "faceGroups": [0, 1, 2]},
+                {"pts": [(0, 0, 0)], "tris": [(0, 1, 2)] * 2,
+                 "faceGroups": [0, 1]},
+            ],
+        }]
+        stream = SimpleNamespace(name="/Root/FastLoad/JT", data=b"jt")
+        streams = {"/Root/FastLoad/JT": stream}
+        with patch("converter.face_colour._ug_part_payload",
+                   return_value=b"payload"), \
+             patch("converter.face_colour.face_display_records",
+                   return_value=[]), \
+             patch("converter.face_colour._face_rows", return_value=rows), \
+             patch("converter.face_colour.body_colour_by_tag",
+                   return_value={9: {"palette": 130}}), \
+             patch("converter.face_colour.palette_table",
+                   return_value={
+                       130: (0.4, 0.4, 0.4),
+                       155: (0.8, 0.2, 0.2),
+                   }), \
+             patch("converter.face_colour.prt_jt.open_prt",
+                   return_value=streams), \
+             patch("converter.face_colour.prt_jt.iter_jt_streams",
+                   return_value=iter([("/Root/FastLoad/JT", stream)])), \
+             patch("converter.face_colour.prt_jt.extract_meshes",
+                   return_value=decoded):
+            entries = decorate_colour_mesh("saved-current.prt")
+        by_mesh = {entry["meshIndex"]: entry for entry in entries}
+        self.assertEqual(by_mesh[0]["color"], [0.4, 0.4, 0.4])
+        self.assertEqual(by_mesh[1]["color"], [0.8, 0.2, 0.2])
 
 
 if __name__ == "__main__":

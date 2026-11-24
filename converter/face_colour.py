@@ -386,6 +386,68 @@ def _split_face_display_entries(
     return entries or None
 
 
+def _partitioned_colour_entries(raw_rows, decoded_pieces, stream_name,
+                                body_palette, table):
+    """Colour a face block split into a main mesh and one override mesh.
+
+    NX writers can put all faces carrying one non-body colour in a separate
+    JT mesh, regardless of whether the outer part is OLE or SPLM.  The
+    override mesh's contiguous group count must equal the exact face-row
+    count for that colour, while the other mesh must account for every
+    remaining inherited/body-colour row.  This is structural evidence;
+    mismatched or multi-colour layouts remain unassigned.
+    """
+    if not decoded_pieces or body_palette is None:
+        return None
+    tags = {tag for tag, _face_id, _palette in raw_rows}
+    if len(tags) != 1:
+        return None
+    census = {}
+    for _tag, _face_id, palette in raw_rows:
+        if palette not in (None, body_palette):
+            census[palette] = census.get(palette, 0) + 1
+    if len(census) != 1:
+        return None
+    override_palette, override_count = next(iter(census.items()))
+    override_rgb = table.get(override_palette)
+    body_rgb = table.get(body_palette, _WHITE)
+    if override_rgb is None:
+        return None
+    remaining_count = len(raw_rows) - override_count
+    candidates = []
+    for piece in decoded_pieces:
+        meshes = [
+            (index, mesh) for index, mesh in enumerate(piece.get("meshes") or ())
+            if mesh.get("tris") and mesh.get("faceGroups")
+        ]
+        if len(meshes) != 2:
+            continue
+        counts = {index: len(set(mesh["faceGroups"])) for index, mesh in meshes}
+        overrides = [
+            (index, mesh) for index, mesh in meshes
+            if counts[index] == override_count
+        ]
+        main = [
+            (index, mesh) for index, mesh in meshes
+            if counts[index] == remaining_count
+        ]
+        if len(overrides) == 1 and len(main) == 1 and overrides[0][0] != main[0][0]:
+            candidates.append((piece.get("piece", 0), overrides[0], main[0]))
+    if len(candidates) != 1:
+        return None
+    piece, override, main = candidates[0]
+    entries = []
+    for mesh_index, mesh, rgb in (
+            (override[0], override[1], override_rgb),
+            (main[0], main[1], body_rgb)):
+        entries.append(_mesh_record(
+            mesh, mesh.get("tris") or (), range(len(mesh.get("tris") or ())),
+            range(len(mesh.get("tris") or ())),
+            stream=stream_name, jtPiece=piece, meshIndex=mesh_index,
+            color=list(rgb), doubleSided=True, colourSource="nx-face"))
+    return entries
+
+
 def decorate_colour_mesh(part_path):
     """Overlay NX face and body colours on every decoded JT piece.
 
@@ -436,6 +498,16 @@ def decorate_colour_mesh(part_path):
         display_records, decoded_pieces, jt_stream.name, body_records, table)
     if split_face_entries is not None:
         return split_face_entries
+    body_palettes = {
+        record.get("palette") for record in body_records.values()
+        if record.get("palette") is not None
+    }
+    if len(body_palettes) == 1:
+        partitioned = _partitioned_colour_entries(
+            raw_rows, decoded_pieces, jt_stream.name,
+            next(iter(body_palettes)), table)
+        if partitioned is not None:
+            return partitioned
     multimesh = _multimesh_colour_entries(
         jt_stream.data, jt_stream.name, raw_rows, table)
     if multimesh:
