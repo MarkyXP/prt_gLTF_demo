@@ -1,4 +1,4 @@
-"""Decode NX per-face display colours and overlay them on every JT piece.
+"""Decode NX per-face display colours/translucency and overlay them on JT.
 
 ``UG_PART/UG_PART`` is a sequence of marker-headed records.  The marker heads
 the following body, whose colour token comes first.  A face body starts
@@ -8,7 +8,9 @@ variant, identifies it.  Body colours use ``47 01 04 01 c0 44 04 00
 face ids rank within their body, and each JT piece is matched to a tag by its
 display vertex-group count (bounds break ties).  Pieces without a structural
 match keep their neutral colour; they are never dropped.  No NX calibration
-data is used at runtime.
+data is used at runtime.  The legacy two-mesh writer layout is also handled:
+one explicit translucent face in its own one-group mesh is joined to the
+remaining contiguous face rows only when the complete set counts match.
 
 > example
 > decorate_colour_mesh("part.prt") -> [coloured mesh dicts] or None
@@ -44,9 +46,15 @@ from converter.face_pieces import (
     piece_lods as _piece_lods,
     primal as _primal,
 )
+from converter.face_display import (
+    FACE_SELECTOR as _FACE_SELECTOR,
+    decode_token as _token,
+    face_display_records,
+    find_face_markers as _find_markers,
+    split_face_mesh_records,
+)
 from converter.palette import palette_table
 
-_FACE_SELECTOR = b"\x93\x8c"
 _WHITE = (1.0, 1.0, 1.0)
 
 
@@ -70,45 +78,6 @@ def _bounds_occludes(outer, inner):
     return contained >= 2 and overlaps
 
 
-def _token(buf, at):
-    """Return ``(value, width)`` for the display token at ``at``.
-
-    A value of ``None`` is the default white token.
-
-    > example
-    > _token(b"\\x33", 0) -> (50, 1)
-    > _token(b"\\x80\\xad", 0) -> (173, 2)
-    > _token(b"\\xc0\\x7f\\xff", 0) -> (None, 3)
-    > _token(b"\\xa2\\xd9\\x31", 0) -> (1235250, 3)
-    """
-    first = buf[at]
-    if first == 0xC0:
-        return None, 3
-    if first < 0x80:
-        return first - 1, 1
-    if first < 0x90:
-        return (first - 0x80) * 256 + buf[at + 1], 2
-    return ((first - 0x90) * 65536
-            + (buf[at + 1] << 8) + buf[at + 2] + 1), 3
-
-
-def _find_markers(payload):
-    """Return every ``(offset, marker_bytes)`` where ``47 03 ?? ?? c0 ?? ?? 00``.
-
-    > example
-    > len(_find_markers(payload)) -> 5033
-    """
-    markers, at = [], 0
-    while True:
-        found = payload.find(b"\x47\x03", at)
-        if found < 0:
-            return markers
-        window = payload[found:found + 8]
-        if len(window) == 8 and window[4] == 0xC0 and window[7] == 0x00:
-            markers.append((found, bytes(window)))
-        at = found + 1
-
-
 def _ug_part_payload(part_path):
     """Return the ``UG_PART/UG_PART`` bytes for a part, or None.
 
@@ -127,23 +96,8 @@ def _face_rows(payload):
     > example
     > _face_rows(payload) -> [(0x2b, 97, None), (0x1f, 1007, 210), ...]
     """
-    rows = []
-    for offset, _marker in _find_markers(payload):
-        palette, width = _token(payload, offset + 8)
-        body = offset + 8 + width
-        if payload[body:body + 1] != b"\x02":
-            continue
-        if body + 3 > len(payload):
-            continue
-        tag = payload[body + 1]
-        face_id, face_width = _token(payload, body + 2)
-        if face_id is None:
-            continue
-        selector = payload[body + 2 + face_width:body + 4 + face_width]
-        if selector != _FACE_SELECTOR:
-            continue
-        rows.append((tag, face_id, palette))
-    return rows
+    return [(record.body_tag, record.face_id, record.palette)
+            for record in face_display_records(payload)]
 
 
 def face_colour_rows(part_path):
@@ -382,6 +336,56 @@ def _extra_mesh_colour_entries(rows, primal_index, meshes,
     return entries, remaining
 
 
+def _split_face_display_entries(
+        records, decoded_pieces, stream_name, body_records, table):
+    """Decorate the exact two-mesh translucent-face writer layout.
+
+    The assignment succeeds only when one explicit face translucency exists,
+    one one-group mesh accounts for that face, and the other contiguous mesh
+    accounts for every remaining face row.  Ambiguous JT layouts return
+    ``None`` so the normal fail-open colour path keeps running.
+    """
+    piece_meshes = [
+        (piece.get("piece", 0), mesh_index, mesh)
+        for piece in decoded_pieces
+        for mesh_index, mesh in enumerate(piece.get("meshes") or ())
+        if mesh.get("tris") and mesh.get("faceGroups")
+    ]
+    assignments = split_face_mesh_records(records, piece_meshes)
+    if assignments is None:
+        return None
+    tags = {record.body_tag for record in records}
+    body_palette = body_records.get(next(iter(tags)), {}).get("palette")
+    entries = []
+    for assignment in assignments:
+        mesh = assignment.mesh
+        ordered = sorted(assignment.records, key=lambda record: record.face_id)
+        triangles = mesh.get("tris") or ()
+        face_groups = mesh.get("faceGroups") or ()
+        if (len(triangles) != len(face_groups)
+                or set(face_groups) != set(range(len(ordered)))):
+            return None
+        by_display = {}
+        for triangle_index, group in enumerate(face_groups):
+            record = ordered[group]
+            palette = (record.palette
+                       if record.palette is not None else body_palette)
+            rgb = table.get(palette)
+            if rgb is None:
+                rgb = _WHITE
+            color = list(rgb)
+            if record.translucency is not None:
+                color.append(round(1.0 - record.translucency / 100.0, 6))
+            by_display.setdefault(tuple(color), []).append(triangle_index)
+        for color, selected in by_display.items():
+            entries.append(_mesh_record(
+                mesh, triangles, selected, selected,
+                stream=stream_name, jtPiece=assignment.piece,
+                meshIndex=assignment.mesh_index,
+                color=list(color), doubleSided=True, colourSource="nx-face"))
+    return entries or None
+
+
 def decorate_colour_mesh(part_path):
     """Overlay NX face and body colours on every decoded JT piece.
 
@@ -394,6 +398,7 @@ def decorate_colour_mesh(part_path):
     payload = _ug_part_payload(part_path)
     if payload is None:
         return None
+    display_records = face_display_records(payload)
     raw_rows = _face_rows(payload)
     if not raw_rows:
         return None
@@ -426,6 +431,11 @@ def decorate_colour_mesh(part_path):
     ), None)
     if jt_stream is None:
         return None
+    decoded_pieces = list(prt_jt.extract_meshes(jt_stream.data) or ())
+    split_face_entries = _split_face_display_entries(
+        display_records, decoded_pieces, jt_stream.name, body_records, table)
+    if split_face_entries is not None:
+        return split_face_entries
     multimesh = _multimesh_colour_entries(
         jt_stream.data, jt_stream.name, raw_rows, table)
     if multimesh:
@@ -434,7 +444,7 @@ def decorate_colour_mesh(part_path):
     if not infos:
         return None
     piece_meshes = {}
-    for piece_data in prt_jt.extract_meshes(jt_stream.data):
+    for piece_data in decoded_pieces:
         piece_id = piece_data.get("piece", 0)
         meshes = piece_data.get("meshes") or []
         if meshes and piece_id not in piece_meshes:
